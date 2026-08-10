@@ -601,14 +601,18 @@ async def mee6import_cmd(ctx, level_threshold: int = None):
 
     async with aiohttp.ClientSession() as session:
         while True:
-            url = f"https://mee6.xyz/api/plugins/levels/guilds/{guild.id}/members?limit={limit}&page={page}"
+            url = f"https://mee6.xyz/api/plugins/levels/leaderboard/{guild.id}?page={page}"
             async with session.get(url) as resp:
                 if resp.status == 429:
                     await ctx.send("⏳ Rate limited by MEE6 API, waiting 10 seconds...")
                     await asyncio.sleep(10)
                     continue
                 if resp.status != 200:
-                    await ctx.send(f"❌ MEE6 API returned status {resp.status}. Is MEE6 Levels plugin enabled?")
+                    await ctx.send(
+                        f"❌ MEE6 API returned status {resp.status}. "
+                        f"Make sure the leaderboard is set to **public** in MEE6 dashboard → Levels → "
+                        f"'Make my server's leaderboard public'"
+                    )
                     return
                 data = await resp.json()
 
