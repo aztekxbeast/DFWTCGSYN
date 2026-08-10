@@ -25,8 +25,8 @@ A Discord bot for managing store-based Pokemon TCG stock alerts and activity-bas
 |---------|-------------|
 | `!pings` | Your ping count for the past 14 days |
 | `!pings @username` | Another user's ping count (past 14 days) |
-| `!pingtotal` | Your total lifetime pings |
-| `!pingtotal @username` | Another user's total lifetime pings |
+| `!pingtotal` | Your total pings (all time) |
+| `!pingtotal @username` | Another user's total pings (all time) |
 | `!pingleaderboard` | Top ping contributors (all time) |
 | `!mylevel` | Your current role + activity status |
 
@@ -48,7 +48,7 @@ A Discord bot for managing store-based Pokemon TCG stock alerts and activity-bas
 ## Access Rules
 
 ### Gaining Pokemon Hunter Role
-- **10 lifetime pings** (`@location` or `@OOS` mentions) to unlock
+- **10 total pings** (`@location` or `@OOS` mentions) to unlock — this is your first-time threshold, not a cap. Once you hit 10 pings total, you get the Hunter role. You can lose it if inactive, but you only need 10 pings again to re-earn it.
 
 ### Maintaining Pokemon Hunter Role (checked every 24h)
 One of these must be true within the last 10 days:
