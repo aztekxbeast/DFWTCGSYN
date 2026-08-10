@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 import aiosqlite
 import asyncio
+import aiohttp
 
 load_dotenv()
 
@@ -574,6 +575,90 @@ async def mee6sync_cmd(ctx):
             except discord.Forbidden:
                 pass
     await ctx.send(f"✅ Sync complete. Granted Hunter role to {count} MEE6 Silver+ members.")
+
+
+@bot.command(name="mee6import")
+@commands.has_role(ADMIN_ROLE_ID)
+async def mee6import_cmd(ctx):
+    """Import MEE6 level data via API and grant Hunter to Silver+ members."""
+    if not MEE6_SILVER_ROLE_ID:
+        await ctx.send("❌ MEE6 Silver Role ID not configured in .env")
+        return
+
+    guild = ctx.guild
+    silver_role = guild.get_role(MEE6_SILVER_ROLE_ID)
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not silver_role or not hunter_role:
+        await ctx.send("❌ Could not find Silver or Hunter role.")
+        return
+
+    await ctx.send("🔄 Fetching MEE6 level data (this may take a moment)...")
+
+    mee6_levels = {}
+    page = 0
+    limit = 1000
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            url = f"https://mee6.xyz/api/plugins/levels/guilds/{guild.id}/members?limit={limit}&page={page}"
+            async with session.get(url) as resp:
+                if resp.status == 429:
+                    await ctx.send("⏳ Rate limited by MEE6 API, waiting 10 seconds...")
+                    await asyncio.sleep(10)
+                    continue
+                if resp.status != 200:
+                    await ctx.send(f"❌ MEE6 API returned status {resp.status}. Is MEE6 in this server?")
+                    return
+                data = await resp.json()
+
+            members = data.get("members", [])
+            if not members:
+                break
+
+            for m in members:
+                user_id = int(m.get("id", 0))
+                xp = m.get("xp", 0)
+                level = m.get("level", 0)
+                mee6_levels[user_id] = {"xp": xp, "level": level}
+
+            if len(members) < limit:
+                break
+            page += 1
+            await asyncio.sleep(1)
+
+    if not mee6_levels:
+        await ctx.send("❌ No MEE6 data found. Is MEE6 configured with the Levels plugin?")
+        return
+
+    granted = 0
+    skipped = 0
+    not_in_server = 0
+
+    for user_id, data in mee6_levels.items():
+        member = guild.get_member(user_id)
+        if not member:
+            not_in_server += 1
+            continue
+
+        if hunter_role in member.roles:
+            skipped += 1
+            continue
+
+        if silver_role in member.roles or data["level"] >= 10:
+            try:
+                await member.add_roles(hunter_role, reason=f"MEE6 import: Level {data['level']}")
+                granted += 1
+            except discord.Forbidden:
+                pass
+
+    summary = (
+        f"✅ MEE6 import complete!\n"
+        f"• **{granted}** members granted Hunter role\n"
+        f"• **{skipped}** already had Hunter\n"
+        f"• **{not_in_server}** MEE6 members not in server\n"
+        f"• **{len(mee6_levels)}** total MEE6 members processed"
+    )
+    await ctx.send(summary)
 
 
 # ─── Error Handling ──────────────────────────────────────────────────────────
