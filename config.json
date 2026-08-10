@@ -9,7 +9,7 @@
   "chat_channels": ["general-chat", "open-hunting", "general"],
   "store_channels": ["walmart", "target", "barnes-noble", "best-buy", "gamestop", "costco", "sam-s", "other-stores"],
   "training_channel": "open-hunting",
-  "mee6_silver_role_name": "Silver",
+  "mee6_level_threshold": 10,
   "pokemon_trainer_role_name": "Pokemon Trainer",
   "pokemon_hunter_role_name": "Pokemon Hunter",
   "admin_role_name": "Admin",

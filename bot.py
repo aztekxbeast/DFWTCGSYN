@@ -579,20 +579,21 @@ async def mee6sync_cmd(ctx):
 
 @bot.command(name="mee6import")
 @commands.has_role(ADMIN_ROLE_ID)
-async def mee6import_cmd(ctx):
-    """Import MEE6 level data via API and grant Hunter to Silver+ members."""
-    if not MEE6_SILVER_ROLE_ID:
-        await ctx.send("❌ MEE6 Silver Role ID not configured in .env")
-        return
-
+async def mee6import_cmd(ctx, level_threshold: int = None):
+    """Import MEE6 level data via API and grant Hunter to members at or above threshold.
+    Usage: !mee6import [level_threshold]
+    Example: !mee6import 10  (grants Hunter to everyone level 10+)
+    If no threshold given, uses the mee6_level_threshold setting from config."""
     guild = ctx.guild
-    silver_role = guild.get_role(MEE6_SILVER_ROLE_ID)
     hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
-    if not silver_role or not hunter_role:
-        await ctx.send("❌ Could not find Silver or Hunter role.")
+    if not hunter_role:
+        await ctx.send("❌ Could not find Pokemon Hunter role. Check POKEMON_HUNTER_ROLE_ID in .env")
         return
 
-    await ctx.send("🔄 Fetching MEE6 level data (this may take a moment)...")
+    if level_threshold is None:
+        level_threshold = int(await get_setting("mee6_level_threshold"))
+
+    await ctx.send(f"🔄 Fetching MEE6 level data (granting Hunter to level {level_threshold}+)...")
 
     mee6_levels = {}
     page = 0
@@ -607,7 +608,7 @@ async def mee6import_cmd(ctx):
                     await asyncio.sleep(10)
                     continue
                 if resp.status != 200:
-                    await ctx.send(f"❌ MEE6 API returned status {resp.status}. Is MEE6 in this server?")
+                    await ctx.send(f"❌ MEE6 API returned status {resp.status}. Is MEE6 Levels plugin enabled?")
                     return
                 data = await resp.json()
 
@@ -627,14 +628,19 @@ async def mee6import_cmd(ctx):
             await asyncio.sleep(1)
 
     if not mee6_levels:
-        await ctx.send("❌ No MEE6 data found. Is MEE6 configured with the Levels plugin?")
+        await ctx.send("❌ No MEE6 data found. Is MEE6 Levels plugin enabled in this server?")
         return
 
     granted = 0
     skipped = 0
     not_in_server = 0
+    below_threshold = 0
+    level_breakdown = {}
 
     for user_id, data in mee6_levels.items():
+        lvl = data["level"]
+        level_breakdown[lvl] = level_breakdown.get(lvl, 0) + 1
+
         member = guild.get_member(user_id)
         if not member:
             not_in_server += 1
@@ -644,19 +650,26 @@ async def mee6import_cmd(ctx):
             skipped += 1
             continue
 
-        if silver_role in member.roles or data["level"] >= 10:
+        if lvl >= level_threshold:
             try:
-                await member.add_roles(hunter_role, reason=f"MEE6 import: Level {data['level']}")
+                await member.add_roles(hunter_role, reason=f"MEE6 import: Level {lvl}")
                 granted += 1
             except discord.Forbidden:
                 pass
+        else:
+            below_threshold += 1
+
+    top_levels = sorted(level_breakdown.items(), reverse=True)[:10]
+    top_display = ", ".join([f"Lvl {lvl}: {count}" for lvl, count in top_levels])
 
     summary = (
-        f"✅ MEE6 import complete!\n"
+        f"✅ MEE6 import complete! (threshold: level {level_threshold})\n"
         f"• **{granted}** members granted Hunter role\n"
         f"• **{skipped}** already had Hunter\n"
+        f"• **{below_threshold}** below level {level_threshold}\n"
         f"• **{not_in_server}** MEE6 members not in server\n"
-        f"• **{len(mee6_levels)}** total MEE6 members processed"
+        f"• **{len(mee6_levels)}** total MEE6 members processed\n"
+        f"• Top levels: {top_display}"
     )
     await ctx.send(summary)
 
