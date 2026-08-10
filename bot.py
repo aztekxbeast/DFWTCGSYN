@@ -832,6 +832,125 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
     await ctx.send(summary)
     scan_in_progress = False
 
+
+@bot.command(name="messagescan")
+@commands.has_role(ADMIN_ROLE_ID)
+async def messagescan_cmd(ctx, msg_threshold: int = None):
+    """Scan message history and grant Hunter to members above a message count threshold.
+    Usage: !messagescan [threshold]
+    Example: !messagescan 50  (grants Hunter to everyone with 50+ messages)"""
+    global scan_in_progress
+    if scan_in_progress:
+        await ctx.send("❌ A scan is already running. Wait for it to finish.")
+        return
+    scan_in_progress = True
+
+    guild = ctx.guild
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        await ctx.send("❌ Could not find Pokemon Hunter role.")
+        scan_in_progress = False
+        return
+
+    if msg_threshold is None:
+        msg_threshold = int(await get_setting("messages_to_gain"))
+
+    await ctx.send(f"🔄 Scanning message history (threshold: {msg_threshold} messages)...")
+
+    user_messages = {}
+    scanned_channels = 0
+    total_messages = 0
+    progress_msg = await ctx.send("📡 Starting scan...")
+    last_update = 0
+
+    channels_to_scan = [ch for ch in guild.text_channels]
+    total_channels = len(channels_to_scan)
+
+    for channel in channels_to_scan:
+        try:
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.read_message_history:
+                continue
+        except discord.Forbidden:
+            continue
+
+        scanned_channels += 1
+
+        if scanned_channels - last_update >= 3 or scanned_channels == total_channels:
+            try:
+                await progress_msg.edit(
+                    content=f"📡 Scanning... Channel **{scanned_channels}/{total_channels}** | "
+                            f"Messages: {total_messages:,} | Users tracked: {len(user_messages)}"
+                )
+                last_update = scanned_channels
+            except discord.Forbidden:
+                pass
+
+        try:
+            async for message in channel.history(limit=10000, oldest_first=False):
+                total_messages += 1
+                if message.author.bot:
+                    continue
+                uid = message.author.id
+                user_messages[uid] = user_messages.get(uid, 0) + 1
+        except discord.Forbidden:
+            continue
+        except Exception:
+            continue
+
+    try:
+        await progress_msg.edit(content="✅ Scan complete! Processing results...")
+    except discord.Forbidden:
+        pass
+
+    if not user_messages:
+        await ctx.send("❌ No messages found.")
+        scan_in_progress = False
+        return
+
+    granted = 0
+    skipped = 0
+    below_threshold = 0
+    not_in_server = 0
+
+    for user_id, count in user_messages.items():
+        member = guild.get_member(user_id)
+        if not member:
+            not_in_server += 1
+            continue
+
+        if hunter_role in member.roles:
+            skipped += 1
+            continue
+
+        if count >= msg_threshold:
+            try:
+                await member.add_roles(hunter_role, reason=f"Message scan: {count} messages")
+                granted += 1
+            except discord.Forbidden:
+                pass
+        else:
+            below_threshold += 1
+
+    top_users = sorted(user_messages.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_display = ", ".join([f"<@{uid}>: {cnt}" for uid, cnt in top_users])
+
+    summary = (
+        f"✅ Message scan complete! (threshold: {msg_threshold})\n"
+        f"• Scanned **{scanned_channels}** channels, **{total_messages:,}** messages\n"
+        f"• **{granted}** members granted Hunter role\n"
+        f"• **{skipped}** already had Hunter\n"
+        f"• **{below_threshold}** below {msg_threshold} messages\n"
+        f"• **{not_in_server}** members not in server\n"
+        f"• **{len(user_messages)}** unique users\n"
+        f"• Top chatters: {top_display}"
+    )
+    await ctx.send(summary)
+    scan_in_progress = False
+
+
+# ─── Error Handling ──────────────────────────────────────────────────────────
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingRole):
