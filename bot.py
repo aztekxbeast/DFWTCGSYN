@@ -35,6 +35,7 @@ intents.members = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+scan_in_progress = False
 
 
 # ─── Database ────────────────────────────────────────────────────────────────
@@ -690,6 +691,12 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
         await ctx.send("❌ Could not find Pokemon Hunter role.")
         return
 
+    global scan_in_progress
+    if scan_in_progress:
+        await ctx.send("❌ A scan is already running. Wait for it to finish.")
+        return
+    scan_in_progress = True
+
     if level_threshold is None:
         level_threshold = int(await get_setting("mee6_level_threshold"))
 
@@ -778,6 +785,7 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
             f"• Scanned {scanned_channels} channels, {total_messages} messages\n"
             f"• Make sure MEE6 is posting level-up messages in your server"
         )
+        scan_in_progress = False
         return
 
     granted = 0
@@ -822,6 +830,7 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
         f"• Top levels: {top_display}"
     )
     await ctx.send(summary)
+    scan_in_progress = False
 
 @bot.event
 async def on_command_error(ctx, error):
