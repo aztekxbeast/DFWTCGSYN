@@ -693,16 +693,21 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
     if level_threshold is None:
         level_threshold = int(await get_setting("mee6_level_threshold"))
 
-    await ctx.send(f"🔄 Scanning message history for MEE6 level-up messages (threshold: level {level_threshold})... This may take a while.")
+    await ctx.send(f"🔄 Scanning message history for MEE6 level-up messages (threshold: level {level_threshold})...")
 
     mee6_users = {}
     scanned_channels = 0
     total_messages = 0
     level_ups_found = 0
+    progress_msg = await ctx.send("📡 Starting scan...")
+    last_update = 0
 
     mee6_keywords = ["reached level", "level up", "just reached", "is now level", "has reached level", "leveled up"]
 
-    for channel in guild.text_channels:
+    channels_to_scan = [ch for ch in guild.text_channels]
+    total_channels = len(channels_to_scan)
+
+    for channel in channels_to_scan:
         try:
             permissions = channel.permissions_for(guild.me)
             if not permissions.read_message_history:
@@ -711,6 +716,17 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
             continue
 
         scanned_channels += 1
+
+        if scanned_channels - last_update >= 3 or scanned_channels == total_channels:
+            try:
+                await progress_msg.edit(
+                    content=f"📡 Scanning... Channel **{scanned_channels}/{total_channels}** | "
+                            f"Messages: {total_messages:,} | Level-ups found: {level_ups_found} | "
+                            f"Users: {len(mee6_users)}"
+                )
+                last_update = scanned_channels
+            except discord.Forbidden:
+                pass
 
         try:
             async for message in channel.history(limit=5000, oldest_first=False):
@@ -750,6 +766,11 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
             continue
         except Exception as e:
             continue
+
+    try:
+        await progress_msg.edit(content=f"✅ Scan complete! Processing results...")
+    except discord.Forbidden:
+        pass
 
     if not mee6_users:
         await ctx.send(
