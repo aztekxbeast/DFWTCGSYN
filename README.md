@@ -100,16 +100,16 @@ When posting in store channels:
 - **Language:** Python 3.10+
 - **Library:** discord.py 2.x
 - **Database:** SQLite (no server needed)
-- **Hosting:** Oracle Cloud Always Free / Vultr $3.50/mo / DigitalOcean $4/mo
+- **Hosting:** Run on your own computer (free) or deploy to a cloud server later for 24/7 uptime
 
 ---
 
 ## Setup
 
 ### Prerequisites
-- Python 3.10 or higher
-- A Discord bot token ([discord.com/developers](https://discord.com/developers))
-- Bot invited with permissions: `Manage Roles`, `Read Message History`, `Send Messages`, `View Channels`, `Mention Everyone`
+- Python 3.10 or higher (https://www.python.org/downloads/)
+- Your Discord bot token (from Discord Developer Portal — already set up)
+- Bot invited to your server with permissions: `Manage Roles`, `Read Message History`, `Send Messages`, `View Channels`, `Mention Everyone`
 
 ### 1. Clone & Install
 ```bash
@@ -123,6 +123,12 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your bot token, guild ID, role IDs, channel IDs
 ```
+
+### 3. Run locally
+```bash
+python bot.py
+```
+The bot will be online on your computer. It stays online as long as the terminal is running. For 24/7 uptime, deploy to a cloud server later.
 
 ### 3. Configure Settings
 Edit `config.json` to set your thresholds and channel IDs:
