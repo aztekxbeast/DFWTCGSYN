@@ -678,7 +678,129 @@ async def mee6import_cmd(ctx, level_threshold: int = None):
     await ctx.send(summary)
 
 
-# ─── Error Handling ──────────────────────────────────────────────────────────
+@bot.command(name="mee6scan")
+@commands.has_role(ADMIN_ROLE_ID)
+async def mee6scan_cmd(ctx, level_threshold: int = None):
+    """Scan message history for MEE6 level-up messages and grant Hunter to members at or above threshold.
+    Usage: !mee6scan [level_threshold]
+    Example: !mee6scan 10  (grants Hunter to everyone who reached level 10+)"""
+    guild = ctx.guild
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        await ctx.send("❌ Could not find Pokemon Hunter role.")
+        return
+
+    if level_threshold is None:
+        level_threshold = int(await get_setting("mee6_level_threshold"))
+
+    await ctx.send(f"🔄 Scanning message history for MEE6 level-up messages (threshold: level {level_threshold})... This may take a while.")
+
+    mee6_users = {}
+    scanned_channels = 0
+    total_messages = 0
+    level_ups_found = 0
+
+    mee6_keywords = ["reached level", "level up", "just reached", "is now level", "has reached level", "leveled up"]
+
+    for channel in guild.text_channels:
+        try:
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.read_message_history:
+                continue
+        except discord.Forbidden:
+            continue
+
+        scanned_channels += 1
+
+        try:
+            async for message in channel.history(limit=5000, oldest_first=False):
+                total_messages += 1
+
+                if message.author.bot is not True:
+                    continue
+
+                if message.author.id != 159962941502783488:
+                    continue
+
+                content_lower = message.content.lower()
+                is_level_up = any(kw in content_lower for kw in mee6_keywords)
+
+                if not is_level_up:
+                    continue
+
+                level_ups_found += 1
+
+                import re
+                level_match = re.search(r'level\s+(\d+)', content_lower)
+                if not level_match:
+                    continue
+
+                level = int(level_match.group(1))
+
+                if message.mentions:
+                    for user in message.mentions:
+                        if user.bot:
+                            continue
+                        if user.id in mee6_users:
+                            mee6_users[user.id] = max(mee6_users[user.id], level)
+                        else:
+                            mee6_users[user.id] = level
+
+        except discord.Forbidden:
+            continue
+        except Exception as e:
+            continue
+
+    if not mee6_users:
+        await ctx.send(
+            f"❌ No MEE6 level-up messages found.\n"
+            f"• Scanned {scanned_channels} channels, {total_messages} messages\n"
+            f"• Make sure MEE6 is posting level-up messages in your server"
+        )
+        return
+
+    granted = 0
+    skipped = 0
+    below_threshold = 0
+    not_in_server = 0
+    level_breakdown = {}
+
+    for user_id, level in mee6_users.items():
+        level_breakdown[level] = level_breakdown.get(level, 0) + 1
+
+        member = guild.get_member(user_id)
+        if not member:
+            not_in_server += 1
+            continue
+
+        if hunter_role in member.roles:
+            skipped += 1
+            continue
+
+        if level >= level_threshold:
+            try:
+                await member.add_roles(hunter_role, reason=f"MEE6 scan: Level {level}")
+                granted += 1
+            except discord.Forbidden:
+                pass
+        else:
+            below_threshold += 1
+
+    top_levels = sorted(level_breakdown.items(), reverse=True)[:10]
+    top_display = ", ".join([f"Lvl {lvl}: {count}" for lvl, count in top_levels])
+
+    summary = (
+        f"✅ MEE6 scan complete! (threshold: level {level_threshold})\n"
+        f"• Scanned **{scanned_channels}** channels, **{total_messages}** messages\n"
+        f"• Found **{level_ups_found}** level-up messages\n"
+        f"• **{granted}** members granted Hunter role\n"
+        f"• **{skipped}** already had Hunter\n"
+        f"• **{below_threshold}** below level {level_threshold}\n"
+        f"• **{not_in_server}** members not in server\n"
+        f"• **{len(mee6_users)}** unique users found\n"
+        f"• Top levels: {top_display}"
+    )
+    await ctx.send(summary)
 
 @bot.event
 async def on_command_error(ctx, error):
