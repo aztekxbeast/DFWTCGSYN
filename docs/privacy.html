@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - PokeHunt Bot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; line-height: 1.6; }
+        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+        h1 { color: #e94560; margin-bottom: 10px; }
+        h2 { color: #e94560; margin-top: 30px; margin-bottom: 10px; }
+        a { color: #e94560; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .nav { display: flex; gap: 20px; margin-bottom: 30px; padding: 15px; background: #16213e; border-radius: 8px; }
+        .nav a { font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { border: 1px solid #333; padding: 10px; text-align: left; }
+        th { background: #16213e; color: #e94560; }
+        ul { margin-left: 20px; margin-top: 10px; }
+        li { margin-bottom: 8px; }
+        .updated { color: #888; font-size: 0.9em; }
+        .footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #333; color: #888; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Privacy Policy</h1>
+        <p class="updated">Last Updated: August 10, 2026</p>
+
+        <div class="nav">
+            <a href="index.html">Home</a>
+            <a href="terms.html">Terms of Service</a>
+            <a href="https://github.com/aztekxbeast/RepoHUB" target="_blank">GitHub</a>
+        </div>
+
+        <h2>1. What We Collect</h2>
+        <p>The PokeHunt Bot collects the following data when you use it in a Discord server:</p>
+        <table>
+            <tr><th>Data Type</th><th>What It Is</th><th>Why We Collect It</th></tr>
+            <tr><td>User ID</td><td>Your Discord user identifier</td><td>To track your activity and role access</td></tr>
+            <tr><td>Messages</td><td>Messages in designated channels (not content, just that you sent one)</td><td>To count chat activity for role maintenance</td></tr>
+            <tr><td>Role Mentions</td><td>When you mention @location or @OOS roles</td><td>To track store ping contributions</td></tr>
+            <tr><td>Media Posts</td><td>When you post images in #pulls or #success channels</td><td>To verify active participation</td></tr>
+            <tr><td>Timestamps</td><td>When actions occur</td><td>To enforce time-based activity windows</td></tr>
+        </table>
+
+        <h2>2. How We Store Data</h2>
+        <ul>
+            <li>All data is stored in a SQLite database on the server hosting the Bot.</li>
+            <li>Data is stored locally and is NOT sent to any third-party services.</li>
+            <li>The database is maintained by the server administrators who run the Bot.</li>
+        </ul>
+
+        <h2>3. How We Use Data</h2>
+        <ul>
+            <li>To automatically grant or revoke the "Pokemon Hunter" role based on activity thresholds.</li>
+            <li>To provide ping counts and leaderboards when requested via bot commands.</li>
+            <li>To sync with MEE6 roles if configured by the server admin.</li>
+        </ul>
+
+        <h2>4. Data Retention</h2>
+        <ul>
+            <li>Activity data is retained for a rolling 14-day window for recent activity checks.</li>
+            <li>All-time ping totals are retained indefinitely for leaderboard purposes.</li>
+            <li>Server admins can clear data using admin commands.</li>
+        </ul>
+
+        <h2>5. Data Sharing</h2>
+        <p>We do NOT share, sell, or transmit your data to any third parties. All data remains on the server where the Bot is hosted.</p>
+
+        <h2>6. Your Rights</h2>
+        <ul>
+            <li>Server admins can view, clear, or reset your data using bot commands.</li>
+            <li>You can request data deletion by contacting the server admin.</li>
+            <li>Removing the Bot from your server stops all data collection.</li>
+        </ul>
+
+        <h2>7. Children's Privacy</h2>
+        <p>The Bot is not directed at children under 13. We do not knowingly collect data from children under 13.</p>
+
+        <h2>8. Changes to This Policy</h2>
+        <p>This Privacy Policy may be updated at any time. Changes will be posted in the Bot's GitHub repository.</p>
+
+        <h2>9. Contact</h2>
+        <p>For privacy concerns, open an issue at <a href="https://github.com/aztekxbeast/RepoHUB/issues">https://github.com/aztekxbeast/RepoHUB/issues</a></p>
+
+        <div class="footer">
+            <p>&copy; 2026 PokeHunt Bot. Open source under the MIT License.</p>
+        </div>
+    </div>
+</body>
+</html>
