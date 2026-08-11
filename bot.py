@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import discord
 from discord.ext import commands, tasks
@@ -51,7 +52,8 @@ async def init_db():
                 store TEXT,
                 mention_type TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
-                message_content TEXT
+                message_content TEXT,
+                location TEXT
             );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,21 +78,16 @@ async def init_db():
             );
             CREATE TABLE IF NOT EXISTS location_aliases (
                 alias TEXT PRIMARY KEY,
-                store TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS restocks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 store TEXT NOT NULL,
-                date TEXT NOT NULL,
-                items TEXT,
-                reported_by INTEGER,
+                added_by INTEGER NOT NULL,
                 timestamp TEXT NOT NULL
             );
         """)
+        # Migration: add location column to existing pings tables
         try:
-            await db.execute("ALTER TABLE pings ADD COLUMN message_content TEXT")
+            await db.execute("ALTER TABLE pings ADD COLUMN location TEXT")
         except Exception:
-            pass
+            pass  # Column already exists
         await db.commit()
         for key, value in CONFIG.items():
             await db.execute(
@@ -770,6 +767,11 @@ async def resetallpings_cmd(ctx):
     await ctx.send("✅ All ping history has been cleared.")
 
 
+@bot.command(name="confirm", hidden=True)
+async def confirm_cmd(ctx):
+    pass  # Used by resetallpings confirmation flow
+
+
 @bot.command(name="settings")
 @commands.has_role(ADMIN_ROLE_ID)
 async def settings_cmd(ctx):
@@ -1383,31 +1385,31 @@ async def predict_cmd(ctx, *args):
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, store FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(message_content) LIKE ? OR LOWER(store) LIKE ?) AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    "SELECT timestamp, message_content, store, location FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", s, f"%{location}%", f"%{location}%", ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, store FROM pings WHERE store LIKE ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    "SELECT timestamp, message_content, store, location FROM pings WHERE store LIKE ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
             rows = await cursor.fetchall()
 
+            embed = discord.Embed(
+                title=f"Predict — {s.title()}",
+                color=discord.Color.blue()
+            )
+            if len(rows) == 0:
+                embed.description = "No pings found."
+                await ctx.send(embed=embed)
+                continue
             if len(rows) < 3:
-                embed = discord.Embed(
-                    title=f"Predict — {s.title()}",
-                    color=discord.Color.blue()
-                )
-                if len(rows) == 0:
-                    embed.description = "No pings found."
-                    await ctx.send(embed=embed)
-                    continue
                 embed.description = f"Only {len(rows)} ping(s) — need more data for full predictions."
 
             # Show last 3 pings as examples
             last_3 = rows[-3:] if len(rows) >= 3 else rows
             example_lines = []
-            for (ts, content, ping_store) in last_3:
+            for (ts, content, ping_store, stored_loc) in last_3:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                     time_str = dt.strftime("%b %d %I:%M %p")
@@ -1420,7 +1422,7 @@ async def predict_cmd(ctx, *args):
 
             location_data = defaultdict(lambda: {"dates": set(), "day_counts": defaultdict(int), "hour_counts": defaultdict(int), "gaps": [], "pings": 0})
 
-            for (ts, content, ping_store) in rows:
+            for (ts, content, ping_store, stored_loc) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
@@ -1428,30 +1430,8 @@ async def predict_cmd(ctx, *args):
 
                 date_str = dt.strftime("%Y-%m-%d")
 
-                # Try to extract location from message content
-                loc = "General"
-                if content:
-                    c = content.lower()
-                    # Skip bot messages or very long messages (likely descriptions)
-                    if len(c) > 150 or "bot" in c[:20] or "server" in c[:20] or "channel" in c[:20]:
-                        pass
-                    elif '@location' in c or '@oos' in c:
-                        # Remove the @location/@oos prefix
-                        c = re.sub(r'@(location|oos)\s*', '', c)
-                        # Remove store name
-                        c = re.sub(r'\b' + re.escape(s.replace('-', ' ')) + r'\b', '', c)
-                        c = re.sub(r'\b' + re.escape(s) + r'\b', '', c)
-                        # Clean up common words
-                        stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want']
-                        for w in stop_words:
-                            c = re.sub(r'\b' + w + r'\b', '', c)
-                        c = re.sub(r'[^\w\s]', ' ', c).strip()
-                        c = re.sub(r'\s+', ' ', c).strip()
-                        # Take only first few words as location (max 3 words)
-                        words = c.split()[:3]
-                        c = ' '.join(words)
-                        if c and len(c) > 1 and len(c) < 40:
-                            loc = c.title()
+                # Use stored location column
+                loc = stored_loc if stored_loc else "General"
 
                 ld = location_data[loc]
                 ld["pings"] += 1
@@ -1592,13 +1572,13 @@ async def restockhistory_cmd(ctx, *args):
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(message_content) LIKE ? OR LOWER(store) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    "SELECT timestamp, message_content, user_id, store, location FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
                 rows = await cursor.fetchall()
                 if not rows:
                     cursor = await db.execute(
-                        "SELECT timestamp, message_content, user_id, store FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                        "SELECT timestamp, message_content, user_id, store, location FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                         (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                     )
                     rows = await cursor.fetchall()
@@ -1607,7 +1587,7 @@ async def restockhistory_cmd(ctx, *args):
                     location_not_found = False
             else:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    "SELECT timestamp, message_content, user_id, store, location FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
                 rows = await cursor.fetchall()
@@ -1935,10 +1915,28 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                     continue
 
                 mention_type = "location" if "@location" in content_lower or "location" in content_lower else "oos"
+
+                # Extract location from message
+                loc = None
+                c = content_lower
+                # Remove @location/@oos prefix
+                c = re.sub(r'@(location|oos)\s*', '', c)
+                # Remove store names
+                for store in store_list:
+                    c = c.replace(store, '').replace(store.replace('-', ' '), '')
+                # Clean common words
+                stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location']
+                for w in stop_words:
+                    c = c.replace(w, ' ')
+                c = re.sub(r'[^\w\s]', ' ', c).strip()
+                c = re.sub(r'\s+', ' ', c).strip()
+                words = c.split()[:3]
+                loc = ' '.join(words) if words else None
+
                 for store in matched_stores:
                     await db.execute(
-                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content) VALUES (?, ?, ?, ?, ?, ?)",
-                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500])
+                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc)
                     )
                     added += 1
 
