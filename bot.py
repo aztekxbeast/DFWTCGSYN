@@ -1816,6 +1816,23 @@ async def listlocations_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="fixlocations")
+@commands.has_role(ADMIN_ROLE_ID)
+async def fixlocations_cmd(ctx):
+    """Re-extract location data for all existing pings without deleting anything."""
+    await ctx.send("🔄 Fixing locations for existing pings...")
+    updated = 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT id, message_content FROM pings")
+        rows = await cursor.fetchall()
+        for (ping_id, content) in rows:
+            new_loc = extract_location_from_text(content)
+            await db.execute("UPDATE pings SET location = ? WHERE id = ?", (new_loc, ping_id))
+            updated += 1
+        await db.commit()
+    await ctx.send(f"✅ Updated location data for **{updated}** pings.")
+
+
 @bot.command(name="backfill")
 @commands.has_role(ADMIN_ROLE_ID)
 async def backfill_cmd(ctx):
