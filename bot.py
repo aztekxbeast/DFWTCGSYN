@@ -1349,9 +1349,9 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
 @bot.command(name="predict")
 @commands.has_role(ADMIN_ROLE_ID)
 async def predict_cmd(ctx, *args):
-    """Analyze ping patterns and predict next restock for a store.
-    Usage: !predict walmart
-    Usage: !predict target alliance (specific location)
+    """Analyze ping patterns and predict next restock.
+    Usage: !predict target
+    Usage: !predict target watauga (specific location)
     Usage: !predict (shows all stores)"""
     store_list = CONFIG.get("store_channels", [])
     days = 30
@@ -1378,7 +1378,6 @@ async def predict_cmd(ctx, *args):
     stores_to_check = [store] if store else store_list
     await ctx.send(f"🔄 Analyzing restock patterns...")
 
-    from collections import defaultdict
     DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1403,132 +1402,122 @@ async def predict_cmd(ctx, *args):
                 embed.description = "No pings found."
                 await ctx.send(embed=embed)
                 continue
-            if len(rows) < 3:
-                embed.description = f"Only {len(rows)} ping(s) — need more data for full predictions."
 
-            # Show last 3 pings as examples
-            last_3 = rows[-3:] if len(rows) >= 3 else rows
-            example_lines = []
-            for (ts, content, ping_store, stored_loc) in last_3:
-                try:
-                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    time_str = dt.strftime("%b %d %I:%M %p")
-                    snippet = content[:80] + "..." if content and len(content) > 80 else (content or "no content")
-                    example_lines.append(f"• {time_str} — {snippet}")
-                except (ValueError, TypeError):
-                    pass
-            if example_lines:
-                embed.add_field(name="📝 Recent Pings", value="\n".join(example_lines), inline=False)
-
-            location_data = defaultdict(lambda: {"dates": set(), "day_counts": defaultdict(int), "hour_counts": defaultdict(int), "gaps": [], "pings": 0})
+            # Group pings by location
+            location_data = defaultdict(lambda: {
+                "dates": set(), "day_counts": defaultdict(int),
+                "hour_counts": defaultdict(int), "gaps": [], "pings": 0,
+                "timestamps": []
+            })
 
             for (ts, content, ping_store, stored_loc) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
                     continue
-
+                loc = stored_loc.title() if stored_loc else "General"
                 date_str = dt.strftime("%Y-%m-%d")
-
-                # Use stored location column
-                loc = stored_loc if stored_loc else "General"
-
                 ld = location_data[loc]
                 ld["pings"] += 1
+                ld["timestamps"].append(dt)
                 if date_str not in ld["dates"]:
                     ld["dates"].add(date_str)
                     ld["day_counts"][dt.weekday()] += 1
                     ld["hour_counts"][dt.hour] += 1
 
-            # Overall store analysis
-            all_dates = set()
-            all_day_counts = defaultdict(int)
-            all_hour_counts = defaultdict(int)
-            all_gaps = []
-            for ld in location_data.values():
-                all_dates.update(ld["dates"])
-                for d, c in ld["day_counts"].items():
-                    all_day_counts[d] += c
-                for h, c in ld["hour_counts"].items():
-                    all_hour_counts[h] += c
+            def build_location_prediction(loc_name, ld):
+                loc_dates = sorted(ld["dates"])
+                lines = []
+                ping_count = ld["pings"]
+                date_count = len(loc_dates)
 
-            sorted_dates = sorted(all_dates)
-            for i in range(1, len(sorted_dates)):
-                d1 = datetime.strptime(sorted_dates[i - 1], "%Y-%m-%d")
-                d2 = datetime.strptime(sorted_dates[i], "%Y-%m-%d")
-                all_gaps.append((d2 - d1).days)
+                if date_count >= 2:
+                    loc_gaps = []
+                    for i in range(1, len(loc_dates)):
+                        d1 = datetime.strptime(loc_dates[i-1], "%Y-%m-%d")
+                        d2 = datetime.strptime(loc_dates[i], "%Y-%m-%d")
+                        loc_gaps.append((d2 - d1).days)
+                    avg_gap = sum(loc_gaps) / len(loc_gaps)
+                    gap_std = (sum((g - avg_gap) ** 2 for g in loc_gaps) / len(loc_gaps)) ** 0.5 if len(loc_gaps) > 1 else avg_gap
 
-            avg_gap = sum(all_gaps) / len(all_gaps) if all_gaps else 7
-
-            if all_day_counts:
-                top_day_idx = max(all_day_counts, key=all_day_counts.get)
-                top_day = DAY_NAMES[top_day_idx]
-                day_confidence = round(all_day_counts[top_day_idx] / len(all_dates) * 100)
-            else:
-                top_day = "Unknown"
-                day_confidence = 0
-
-            if all_hour_counts:
-                top_hour = max(all_hour_counts, key=all_hour_counts.get)
-                hour_confidence = round(all_hour_counts[top_hour] / len(all_dates) * 100)
-                hour_display = f"{top_hour}:00-{(top_hour + 3) % 24}:00"
-            else:
-                hour_display = "Unknown"
-                hour_confidence = 0
-
-            last_date = sorted_dates[-1] if sorted_dates else "Unknown"
-            last_dt = datetime.strptime(last_date, "%Y-%m-%d")
-            next_dt = last_dt + timedelta(days=round(avg_gap))
-            days_until = (next_dt - datetime.now()).days
-
-            if days_until <= 0:
-                prediction = "⚡ **Possible restock window NOW**"
-            elif days_until <= 2:
-                prediction = f"⏰ Likely in **{days_until} day(s)** ({next_dt.strftime('%A')})"
-            else:
-                prediction = f"📅 Predicted: **{next_dt.strftime('%A, %b %d')}** (~{days_until} days)"
-
-            embed = discord.Embed(
-                title=f"Predict — {s.title()}",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Prediction", value=prediction, inline=False)
-            embed.add_field(name="Best Day", value=f"{top_day} ({day_confidence}% confidence)", inline=True)
-            embed.add_field(name="Best Window", value=f"{hour_display} ({hour_confidence}% confidence)", inline=True)
-            embed.add_field(name="Avg Restock Cycle", value=f"Every {avg_gap:.1f} days", inline=True)
-            embed.add_field(name="Data Points", value=f"{len(all_dates)} restock dates, {len(rows)} total pings", inline=True)
-            embed.add_field(name="Last Confirmed", value=last_date, inline=True)
-
-            sorted_locs = sorted(location_data.items(), key=lambda x: x[1]["pings"], reverse=True)
-            # Filter out junk locations - keep only ones that look like real place names
-            real_locs = []
-            for loc_name, ld in sorted_locs:
-                if loc_name == "General":
-                    continue
-                if len(loc_name) > 30:
-                    continue
-                if any(c.isdigit() for c in loc_name):
-                    continue
-                real_locs.append((loc_name, ld))
-
-            if real_locs:
-                loc_lines = []
-                for loc_name, ld in real_locs[:8]:
-                    loc_dates = sorted(ld["dates"])
-                    if len(loc_dates) >= 2:
-                        loc_gaps = []
-                        for i in range(1, len(loc_dates)):
-                            d1 = datetime.strptime(loc_dates[i-1], "%Y-%m-%d")
-                            d2 = datetime.strptime(loc_dates[i], "%Y-%m-%d")
-                            loc_gaps.append((d2 - d1).days)
-                        loc_avg = sum(loc_gaps) / len(loc_gaps)
-                        loc_lines.append(f"• **{loc_name}** — {ld['pings']} pings, ~{loc_avg:.0f} day cycle")
+                    if gap_std < 1.5:
+                        confidence = "High"
+                        conf_pct = min(95, 70 + int((1.5 - gap_std) * 15))
+                    elif gap_std < 3:
+                        confidence = "Medium"
+                        conf_pct = min(70, 40 + int((3 - gap_std) * 10))
                     else:
-                        loc_lines.append(f"• **{loc_name}** — {ld['pings']} pings (need more data)")
-                if loc_lines:
-                    embed.add_field(name="📍 By Location", value="\n".join(loc_lines), inline=False)
+                        confidence = "Low"
+                        conf_pct = max(15, 40 - int(gap_std * 5))
 
-            embed.set_footer(text="Based on ping history. Accuracy improves with more data.")
+                    last_dt = datetime.strptime(loc_dates[-1], "%Y-%m-%d")
+                    next_dt = last_dt + timedelta(days=round(avg_gap))
+                    days_until = (next_dt - datetime.now()).days
+
+                    if days_until <= 0:
+                        prediction = "⚡ **Possible restock NOW**"
+                    elif days_until <= 2:
+                        prediction = f"⏰ Likely in **{days_until} day(s)** ({next_dt.strftime('%A')})"
+                    else:
+                        prediction = f"📅 **{next_dt.strftime('%A, %b %d')}** (~{days_until}d)"
+
+                    lines.append(f"Prediction: {prediction}")
+                    lines.append(f"Avg cycle: **{avg_gap:.1f} days** (±{gap_std:.1f})")
+                else:
+                    avg_gap = 7
+                    confidence = "Low"
+                    conf_pct = 15
+                    lines.append(f"Prediction: Need more data ({date_count} date(s))")
+
+                if ld["day_counts"]:
+                    top_day_idx = max(ld["day_counts"], key=ld["day_counts"].get)
+                    top_day = DAY_NAMES[top_day_idx]
+                    day_pct = round(ld["day_counts"][top_day_idx] / date_count * 100) if date_count else 0
+                    lines.append(f"Best day: **{top_day}** ({day_pct}%)")
+
+                if ld["hour_counts"]:
+                    top_hour = max(ld["hour_counts"], key=ld["hour_counts"].get)
+                    hour_pct = round(ld["hour_counts"][top_hour] / date_count * 100) if date_count else 0
+                    hour_end = (top_hour + 3) % 24
+                    lines.append(f"Best window: **{top_hour}:00-{hour_end}:00** ({hour_pct}%)")
+
+                lines.append(f"Confidence: **{confidence}** ({conf_pct}%)")
+                lines.append(f"Data: {ping_count} pings across {date_count} days")
+                return "\n".join(lines)
+
+            if location:
+                # Show specific location prediction
+                matched_locs = []
+                for loc_name, ld in location_data.items():
+                    if location in loc_name.lower():
+                        matched_locs.append((loc_name, ld))
+
+                if not matched_locs:
+                    embed.description = f"No pings found for **{location}** at {s.title()}."
+                    await ctx.send(embed=embed)
+                    continue
+
+                for loc_name, ld in matched_locs:
+                    pred_text = build_location_prediction(loc_name, ld)
+                    embed.add_field(name=f"📍 {loc_name}", value=pred_text, inline=False)
+
+            else:
+                # Show all locations
+                embed.description = f"**{len(rows)}** total pings across **{len(location_data)}** locations"
+
+                sorted_locs = sorted(location_data.items(), key=lambda x: x[1]["pings"], reverse=True)
+                real_locs = [(n, ld) for n, ld in sorted_locs if n != "General" and len(n) <= 30]
+
+                if real_locs:
+                    for loc_name, ld in real_locs[:5]:
+                        pred_text = build_location_prediction(loc_name, ld)
+                        embed.add_field(name=f"📍 {loc_name}", value=pred_text, inline=False)
+                    if len(real_locs) > 5:
+                        remaining = len(real_locs) - 5
+                        embed.set_footer(text=f"...and {remaining} more locations. Use !predict {s} <location> for details.")
+                else:
+                    embed.add_field(name="No locations found", value="Pings found but no location data extracted yet.", inline=False)
+
             await ctx.send(embed=embed)
 
 
@@ -1850,7 +1839,14 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                     continue
 
                 content_lower = message.content.lower()
-                has_ping = "@location" in content_lower or "@oos" in content_lower
+
+                # Check actual Discord role mentions (like real-time handler does)
+                role_names = [r.name.lower() for r in message.role_mentions]
+                has_ping = "location" in role_names or "oos" in role_names
+
+                # Also check text-based fallback for users who can't ping the role
+                if not has_ping:
+                    has_ping = "@location" in content_lower or "@oos" in content_lower
 
                 msg_key = f"{message.author.id}:{message.channel.id}:{message.content[:200]}"
                 if msg_key in seen_messages:
@@ -1914,20 +1910,22 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                     skipped += 1
                     continue
 
-                mention_type = "location" if "@location" in content_lower or "location" in content_lower else "oos"
+                mention_type = "location" if "location" in role_names else "oos"
 
                 # Extract location from message
                 loc = None
                 c = content_lower
                 # Remove @location/@oos prefix
                 c = re.sub(r'@(location|oos)\s*', '', c)
-                # Remove store names
+                # Remove store names and abbreviations
                 for store in store_list:
-                    c = c.replace(store, '').replace(store.replace('-', ' '), '')
+                    c = c.replace(store, ' ').replace(store.replace('-', ' '), ' ')
+                for abbr in STORE_ABBREVIATIONS:
+                    c = c.replace(abbr, ' ')
                 # Clean common words
-                stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location']
+                stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location', 'pokémon', 'pokemon']
                 for w in stop_words:
-                    c = c.replace(w, ' ')
+                    c = re.sub(r'\b' + w + r'\b', ' ', c)
                 c = re.sub(r'[^\w\s]', ' ', c).strip()
                 c = re.sub(r'\s+', ' ', c).strip()
                 words = c.split()[:3]
