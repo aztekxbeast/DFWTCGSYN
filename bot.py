@@ -665,26 +665,27 @@ async def helpme_cmd(ctx):
             name="🛡️ Admin Commands",
             value=(
                 "`!whitelist add @user` — Grant permanent Hunter access\n"
-                "`!whitelist add 123456789` — Grant access by user ID (works from any channel)\n"
                 "`!whitelist remove @user` — Remove from whitelist\n"
                 "`!resetpings @user` — Clear a user's ping history\n"
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
-                "`!allstats` — Server-wide activity overview\n"
-                "`!predict <store>` — Predict next restock based on patterns\n"
-                "`!predict <store> <location>` — Predict for specific location (e.g. `!predict target alliance`)\n"
-                "`!rh <store>` — View recent restock dates (alias for !restockhistory)\n"
-                "`!rh <store> <location>` — Filter by location (e.g. `!rh walmart beach`)\n"
-                "`!addlocation <word> <store>` — Add a location alias (e.g. `!addlocation alliance target`)\n"
-                "`!removelocation <word>` — Remove a location alias\n"
-                "`!listlocations` — Show all location aliases\n"
-                "`!deepbackfill` — Scan channels for past pings (last 7 days)\n"
+                "`!allStats` — Server-wide activity overview\n"
+                "`!sync` — Run manual access check"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="📊 Restock Tracking",
+            value=(
+                "`!predict <store>` — Predict next restock\n"
+                "`!predict <store> <location>` — e.g. `!predict target alliance`\n"
+                "`!rh <store>` — Recent restock dates\n"
+                "`!rh <store> <location>` — e.g. `!rh walmart beach`\n"
+                "`!deepbackfill` — Scan for past pings (7 days)\n"
                 "`!deepbackfill 14` — Scan last 14 days\n"
-                "`!backfill` — Backfill message content for old pings\n"
-                "`!settings` — View bot settings\n"
-                "`!set <key> <value>` — Change a setting\n"
-                "`!sync` — Run manual access check\n"
-                "`!mee6sync` — Sync MEE6 Silver+ roles"
+                "`!addlocation <word>` — Add a location word\n"
+                "`!removelocation <word>` — Remove a location word\n"
+                "`!listlocations` — Show all location words"
             ),
             inline=False
         )
