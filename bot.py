@@ -1538,6 +1538,19 @@ async def backfill_cmd(ctx):
         return
     scan_in_progress = True
 
+    # Clear bad message content (non-ping messages that were incorrectly matched)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT id, message_content FROM pings WHERE message_content IS NOT NULL AND message_content != ''")
+        all_pings = await cursor.fetchall()
+        cleared = 0
+        for (pid, content) in all_pings:
+            if content and '@location' not in content.lower() and '@oos' not in content.lower():
+                await db.execute("UPDATE pings SET message_content = NULL WHERE id = ?", (pid,))
+                cleared += 1
+        await db.commit()
+    if cleared > 0:
+        await ctx.send(f"🔄 Cleared {cleared} incorrectly matched messages. Re-scanning...")
+
     await ctx.send("🔄 Backfilling message content for old pings...")
     progress_msg = await ctx.send("📡 Starting...")
     updated = 0
@@ -1545,7 +1558,7 @@ async def backfill_cmd(ctx):
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT id, user_id, channel_id, store, timestamp FROM pings WHERE message_content IS NULL"
+            "SELECT id, user_id, channel_id, store, timestamp FROM pings WHERE message_content IS NULL OR message_content = '' OR message_content = 'None'"
         )
         pings_to_fix = await cursor.fetchall()
 
@@ -1586,6 +1599,9 @@ async def backfill_cmd(ctx):
         try:
             async for msg in channel.history(limit=50, around=dt):
                 if msg.author.id == user_id and not msg.author.bot:
+                    content_lower = msg.content.lower()
+                    if '@location' not in content_lower and '@oos' not in content_lower:
+                        continue
                     ts_diff = abs((msg.created_at - dt).total_seconds())
                     if ts_diff < 120:
                         async with aiosqlite.connect(DB_PATH) as db:
