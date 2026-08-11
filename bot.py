@@ -72,6 +72,14 @@ async def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS restocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store TEXT NOT NULL,
+                date TEXT NOT NULL,
+                items TEXT,
+                reported_by INTEGER,
+                timestamp TEXT NOT NULL
+            );
         """)
         for key, value in CONFIG.items():
             await db.execute(
@@ -574,6 +582,8 @@ async def helpme_cmd(ctx):
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
                 "`!allstats` — Server-wide activity overview\n"
+                "`!predict <store>` — Predict next restock based on patterns\n"
+                "`!restockhistory <store>` — View recent restock dates\n"
                 "`!settings` — View bot settings\n"
                 "`!set <key> <value>` — Change a setting\n"
                 "`!sync` — Run manual access check\n"
@@ -1235,7 +1245,165 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
     scan_in_progress = False
 
 
-# ─── Error Handling ──────────────────────────────────────────────────────────
+@bot.command(name="predict")
+@commands.has_role(ADMIN_ROLE_ID)
+async def predict_cmd(ctx, store: str = None):
+    """Analyze ping patterns and predict next restock for a store.
+    Usage: !predict walmart
+    Usage: !predict (shows all stores)"""
+    store_list = CONFIG.get("store_channels", [])
+
+    if store and store.lower() not in store_list:
+        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
+        return
+
+    stores_to_check = [store.lower()] if store else store_list
+    await ctx.send(f"🔄 Analyzing restock patterns...")
+
+    from collections import defaultdict
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        for s in stores_to_check:
+            cursor = await db.execute(
+                "SELECT timestamp FROM pings WHERE store = ? ORDER BY timestamp ASC",
+                (s,)
+            )
+            rows = await cursor.fetchall()
+
+            if len(rows) < 3:
+                embed = discord.Embed(
+                    title=f"Predict — {s.title()}",
+                    description=f"Not enough data yet ({len(rows)} pings). Need at least 3.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+                continue
+
+            dates_seen = set()
+            day_counts = defaultdict(int)
+            hour_counts = defaultdict(int)
+            gaps = []
+
+            for (ts,) in rows:
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                date_str = dt.strftime("%Y-%m-%d")
+                if date_str not in dates_seen:
+                    dates_seen.add(date_str)
+                    day_counts[dt.weekday()] += 1
+                    hour_counts[dt.hour] += 1
+
+            sorted_dates = sorted(dates_seen)
+            for i in range(1, len(sorted_dates)):
+                d1 = datetime.strptime(sorted_dates[i - 1], "%Y-%m-%d")
+                d2 = datetime.strptime(sorted_dates[i], "%Y-%m-%d")
+                gaps.append((d2 - d1).days)
+
+            if gaps:
+                avg_gap = sum(gaps) / len(gaps)
+            else:
+                avg_gap = 7
+
+            if day_counts:
+                top_day_idx = max(day_counts, key=day_counts.get)
+                top_day = DAY_NAMES[top_day_idx]
+                day_confidence = round(day_counts[top_day_idx] / len(dates_seen) * 100)
+            else:
+                top_day = "Unknown"
+                day_confidence = 0
+
+            if hour_counts:
+                top_hour = max(hour_counts, key=hour_counts.get)
+                hour_confidence = round(hour_counts[top_hour] / len(dates_seen) * 100)
+                hour_display = f"{top_hour}:00-{(top_hour + 3) % 24}:00"
+            else:
+                hour_display = "Unknown"
+                hour_confidence = 0
+
+            last_date = sorted_dates[-1] if sorted_dates else "Unknown"
+            last_dt = datetime.strptime(last_date, "%Y-%m-%d")
+            next_dt = last_dt + timedelta(days=round(avg_gap))
+            days_until = (next_dt - datetime.now()).days
+
+            if days_until <= 0:
+                prediction = "⚡ **Possible restock window NOW**"
+            elif days_until <= 2:
+                prediction = f"⏰ Likely in **{days_until} day(s)** ({next_dt.strftime('%A')})"
+            else:
+                prediction = f"📅 Predicted: **{next_dt.strftime('%A, %b %d')}** (~{days_until} days)"
+
+            embed = discord.Embed(
+                title=f"Predict — {s.title()}",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Prediction", value=prediction, inline=False)
+            embed.add_field(name="Best Day", value=f"{top_day} ({day_confidence}% confidence)", inline=True)
+            embed.add_field(name="Best Window", value=f"{hour_display} ({hour_confidence}% confidence)", inline=True)
+            embed.add_field(name="Avg Restock Cycle", value=f"Every {avg_gap:.1f} days", inline=True)
+            embed.add_field(name="Data Points", value=f"{len(dates_seen)} restock dates, {len(rows)} total pings", inline=True)
+            embed.add_field(name="Last Confirmed", value=last_date, inline=True)
+            embed.set_footer(text="Based on ping history patterns. Accuracy improves with more data.")
+            await ctx.send(embed=embed)
+
+
+@bot.command(name="restockhistory")
+@commands.has_role(ADMIN_ROLE_ID)
+async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
+    """View recent ping history for a store to identify restock dates.
+    Usage: !restockhistory walmart
+    Usage: !restockhistory walmart 60 (last 60 days)"""
+    store_list = CONFIG.get("store_channels", [])
+
+    if not store or store.lower() not in store_list:
+        await ctx.send(f"❌ Usage: `!restockhistory <store> [days]`\nValid stores: {', '.join(store_list)}")
+        return
+
+    store = store.lower()
+    cutoff = days_ago_iso(days)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT timestamp FROM pings WHERE store = ? AND timestamp >= ? ORDER BY timestamp ASC",
+            (store, cutoff)
+        )
+        rows = await cursor.fetchall()
+
+    if not rows:
+        await ctx.send(f"No pings found for {store} in the last {days} days.")
+        return
+
+    dates_seen = set()
+    daily_counts = {}
+    for (ts,) in rows:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        date_str = dt.strftime("%Y-%m-%d (%a)")
+        dates_seen.add(date_str)
+        daily_counts[date_str] = daily_counts.get(date_str, 0) + 1
+
+    sorted_dates = sorted(daily_counts.items())
+
+    embed = discord.Embed(
+        title=f"Restock History — {store.title()} (last {days}d)",
+        color=discord.Color.green()
+    )
+
+    history_text = ""
+    for date_str, count in sorted_dates[-20:]:
+        bar = "█" * min(count, 20)
+        history_text += f"`{date_str}` — {count} pings {bar}\n"
+
+    if len(sorted_dates) > 20:
+        history_text = f"*Showing last 20 of {len(sorted_dates)} dates*\n\n" + history_text
+
+    embed.description = history_text
+    embed.set_footer(text=f"Total: {len(rows)} pings across {len(dates_seen)} days")
+    await ctx.send(embed=embed)
 
 @bot.event
 async def on_command_error(ctx, error):
