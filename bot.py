@@ -17,7 +17,7 @@ POKEMON_TRAINER_ROLE_ID = int(os.getenv("POKEMON_TRAINER_ROLE_ID", "0"))
 POKEMON_HUNTER_ROLE_ID = int(os.getenv("POKEMON_HUNTER_ROLE_ID", "0"))
 ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))
 MOD_ROLE_ID = int(os.getenv("MOD_ROLE_ID", "0"))
-ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv("ANNOUNCEMENTS_CHANNEL_ID", "0"))
+ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv("ANNOUNCEMENTS_CHANNEL_ID", "1502087476305461349"))
 GENERAL_CHAT_CHANNEL_ID = int(os.getenv("GENERAL_CHAT_CHANNEL_ID", "0"))
 OPEN_HUNTING_CHANNEL_ID = int(os.getenv("OPEN_HUNTING_CHANNEL_ID", "0"))
 PULLS_CHANNEL_ID = int(os.getenv("PULLS_CHANNEL_ID", "0"))
@@ -441,12 +441,13 @@ async def on_message(message):
     channel_id = message.channel.id
     user_id = message.author.id
 
-    # Track pings in ALL channels
-    store_mentions = extract_store_from_text(message)
-    if store_mentions:
-        for mention in store_mentions:
-            await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500])
-        await check_grant_access(user_id, message.guild)
+    # Track pings in all channels except server-announcements
+    if message.channel.id != ANNOUNCEMENTS_CHANNEL_ID:
+        store_mentions = extract_store_from_text(message)
+        if store_mentions:
+            for mention in store_mentions:
+                await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500])
+            await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
     media_channels = CONFIG.get("media_channels", [])
@@ -1469,8 +1470,8 @@ async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             cursor = await db.execute(
-                "SELECT timestamp, message_content, user_id FROM pings WHERE store = ? AND timestamp >= ? ORDER BY timestamp ASC",
-                (s, cutoff)
+                "SELECT timestamp, message_content, user_id FROM pings WHERE store = ? AND timestamp >= ? AND channel_id != ? ORDER BY timestamp ASC",
+                (s, cutoff, ANNOUNCEMENTS_CHANNEL_ID)
             )
             rows = await cursor.fetchall()
 
@@ -1538,7 +1539,25 @@ async def backfill_cmd(ctx):
         return
     scan_in_progress = True
 
-    # Clear bad message content (non-ping messages that were incorrectly matched)
+    # Clean up pings from server-announcements
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, channel_id FROM pings"
+        )
+        all_pings = await cursor.fetchall()
+        removed = 0
+        for (pid, ch_id) in all_pings:
+            ch = ctx.guild.get_channel(ch_id)
+            if ch and ch.id == 1502087476305461349:
+                await db.execute("DELETE FROM pings WHERE id = ?", (pid,))
+                removed += 1
+        await db.commit()
+    if removed > 0:
+        await ctx.send(f"🗑️ Removed {removed} pings from server-announcements.")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM pings WHERE channel_id = ?", (ANNOUNCEMENTS_CHANNEL_ID,))
+        await db.commit()
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT id, message_content FROM pings WHERE message_content IS NOT NULL AND message_content != ''")
         all_pings = await cursor.fetchall()
@@ -1579,6 +1598,9 @@ async def backfill_cmd(ctx):
         if channel_id not in channel_cache:
             channel = ctx.guild.get_channel(channel_id)
             if not channel:
+                continue
+            # Skip server-announcements
+            if channel.id == 1502087476305461349:
                 continue
             try:
                 if not channel.permissions_for(ctx.guild.me).read_message_history:

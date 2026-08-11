@@ -17,6 +17,31 @@ One bot does everything:
 - Grants Hunter head-start to MEE6 Silver+ members on join
 - All admin settings adjustable via slash commands (no code edits)
 
+### Channel Tracking (What Counts as Pings)
+
+| Channel | Ping Tracking | Media Tracking | Chat Tracking |
+|---------|---------------|----------------|---------------|
+| **#server-announcements** | ❌ NOT tracked | ❌ | ❌ |
+| **#general-announcements** | ✅ Tracked | ❌ | ✅ |
+| **#open-hunting** | ✅ Tracked | ❌ | ✅ |
+| **#training-hunting** | ✅ Tracked | ❌ | ✅ |
+| **#general-chat** | ✅ Tracked | ❌ | ✅ |
+| **#ft-worth-area-hunts** | ✅ Tracked | ❌ | ✅ |
+| **#dallas-area-hunts** | ✅ Tracked | ❌ | ✅ |
+| **#walmart** | ✅ Tracked | ❌ | ✅ |
+| **#target** | ✅ Tracked | ❌ | ✅ |
+| **#barnes-noble** | ✅ Tracked | ❌ | ✅ |
+| **#best-buy** | ✅ Tracked | ❌ | ✅ |
+| **#other-stores** | ✅ Tracked | ❌ | ✅ |
+| **#pulls** | ✅ Tracked | ✅ | ✅ |
+| **#success** | ✅ Tracked | ✅ | ✅ |
+
+**Key Points:**
+- **#server-announcements** is the ONLY channel NOT tracked for pings
+- All other text channels track `@location` / `@OOS` mentions as pings
+- Media tracking (photos) only counts in #pulls and #success
+- Chat tracking counts in all non-announcement channels
+
 ---
 
 ## Option A Step-by-Step
