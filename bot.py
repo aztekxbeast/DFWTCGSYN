@@ -616,6 +616,7 @@ async def helpme_cmd(ctx):
                 "`!allstats` — Server-wide activity overview\n"
                 "`!predict <store>` — Predict next restock based on patterns\n"
                 "`!restockhistory <store>` — View recent restock dates\n"
+                "`!backfill` — Backfill message content for old pings\n"
                 "`!settings` — View bot settings\n"
                 "`!set <key> <value>` — Change a setting\n"
                 "`!sync` — Run manual access check\n"
@@ -1504,6 +1505,83 @@ async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
 
     if not found_any:
         await ctx.send(f"No pings found in the last {days} days.")
+
+
+@bot.command(name="backfill")
+@commands.has_role(ADMIN_ROLE_ID)
+async def backfill_cmd(ctx):
+    """Backfill message content for old pings that don't have it.
+    Scans Discord history and matches messages to existing ping records."""
+    global scan_in_progress
+    if scan_in_progress:
+        await ctx.send("❌ A scan is already running. Wait for it to finish.")
+        return
+    scan_in_progress = True
+
+    await ctx.send("🔄 Backfilling message content for old pings...")
+    progress_msg = await ctx.send("📡 Starting...")
+    updated = 0
+    scanned = 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, user_id, channel_id, store, timestamp FROM pings WHERE message_content IS NULL"
+        )
+        pings_to_fix = await cursor.fetchall()
+
+    if not pings_to_fix:
+        await ctx.send("✅ All pings already have message content.")
+        scan_in_progress = False
+        return
+
+    await ctx.send(f"Found **{len(pings_to_fix)}** pings missing content. Scanning channels...")
+
+    channel_cache = {}
+    for ping_id, user_id, channel_id, store, timestamp in pings_to_fix:
+        try:
+            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+
+        if channel_id not in channel_cache:
+            channel = ctx.guild.get_channel(channel_id)
+            if not channel:
+                continue
+            try:
+                if not channel.permissions_for(ctx.guild.me).read_message_history:
+                    continue
+            except discord.Forbidden:
+                continue
+            channel_cache[channel_id] = channel
+
+        channel = channel_cache[channel_id]
+        scanned += 1
+
+        if scanned % 50 == 0:
+            try:
+                await progress_msg.edit(content=f"📡 Scanned {scanned}/{len(pings_to_fix)} | Updated: {updated}")
+            except discord.Forbidden:
+                pass
+
+        try:
+            async for msg in channel.history(limit=50, around=dt):
+                if msg.author.id == user_id and not msg.author.bot:
+                    ts_diff = abs((msg.created_at - dt).total_seconds())
+                    if ts_diff < 120:
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            await db.execute(
+                                "UPDATE pings SET message_content = ? WHERE id = ?",
+                                (msg.content[:500], ping_id)
+                            )
+                            await db.commit()
+                        updated += 1
+                        break
+        except (discord.Forbidden, Exception):
+            continue
+
+    await progress_msg.edit(content=f"✅ Backfill complete! Updated {updated} of {len(pings_to_fix)} pings.")
+    scan_in_progress = False
+
 
 @bot.event
 async def on_command_error(ctx, error):
