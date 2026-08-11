@@ -1656,7 +1656,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
     store_list = CONFIG.get("store_channels", [])
     scan_channels = [s for s in store_list]  # walmart, target, etc.
-    scan_channels.extend(["ft-worth-area-hunts", "dallas-area-hunts"])
+    scan_channels.extend(["ft-worth-area-hunts", "dallas-area-hunts", "open-hunting", "training-hunting", "general-chat"])
 
     cutoff = datetime.utcnow() - timedelta(days=days)
     total_added = 0
