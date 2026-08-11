@@ -572,6 +572,8 @@ async def helpme_cmd(ctx):
                 "`!whitelist remove @user` — Remove from whitelist\n"
                 "`!resetpings @user` — Clear a user's ping history\n"
                 "`!resetallpings` — Clear ALL ping history\n"
+                "`!stats @user` — Detailed stats for a user\n"
+                "`!allstats` — Server-wide activity overview\n"
                 "`!settings` — View bot settings\n"
                 "`!set <key> <value>` — Change a setting\n"
                 "`!sync` — Run manual access check\n"
@@ -704,6 +706,136 @@ async def sync_cmd(ctx):
                 await check_access(user_id, guild)
                 count += 1
     await ctx.send(f"✅ Access check complete. Processed {count} members.")
+
+
+@bot.command(name="stats")
+@commands.has_role(ADMIN_ROLE_ID)
+async def stats_cmd(ctx, target: discord.Member = None):
+    """Show detailed stats for a specific user.
+    Usage: !stats @user"""
+    if not target:
+        target = ctx.author
+
+    window = int(await get_setting("maintenance_window_days"))
+    total_pings = await count_total("pings", target.id)
+    recent_pings = await count_in_window("pings", target.id, window)
+    media_count = await count_in_window("media", target.id, window)
+    chat_count = await count_in_window("chat", target.id, int(await get_setting("chat_window_days")))
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    has_hunter = hunter_role in target.roles if hunter_role else False
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT store, COUNT(*) as cnt FROM pings WHERE user_id = ? GROUP BY store ORDER BY cnt DESC LIMIT 10",
+            (target.id,)
+        )
+        store_rows = await cursor.fetchall()
+        cursor = await db.execute(
+            "SELECT mention_type, COUNT(*) as cnt FROM pings WHERE user_id = ? GROUP BY mention_type",
+            (target.id,)
+        )
+        type_rows = await cursor.fetchall()
+        cursor = await db.execute("SELECT user_id FROM whitelist WHERE user_id = ?", (target.id,))
+        is_whitelisted = await cursor.fetchone()
+
+    embed = discord.Embed(
+        title=f"Stats — {target.display_name}",
+        color=discord.Color.green() if has_hunter else discord.Color.red()
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="Pokemon Hunter", value="✅ Yes" if has_hunter else "❌ No", inline=True)
+    embed.add_field(name="Whitelisted", value="✅ Yes" if is_whitelisted else "❌ No", inline=True)
+    embed.add_field(name="Total Pings", value=str(total_pings), inline=True)
+    embed.add_field(name=f"Pings ({window}d)", value=str(recent_pings), inline=True)
+    embed.add_field(name=f"Required ({window}d)", value=str(await get_setting("pings_to_maintain")), inline=True)
+    embed.add_field(name="Media Posts", value=str(media_count), inline=True)
+    embed.add_field(name="Chat Messages", value=str(chat_count), inline=True)
+
+    if type_rows:
+        type_display = ", ".join([f"{t}: {c}" for t, c in type_rows])
+        embed.add_field(name="Ping Types", value=type_display, inline=False)
+
+    if store_rows:
+        store_display = "\n".join([f"• **{s}**: {c}" for s, c in store_rows])
+        embed.add_field(name="Top Stores", value=store_display, inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="allstats")
+@commands.has_role(ADMIN_ROLE_ID)
+async def allstats_cmd(ctx):
+    """Show an overview of all members with activity and Hunter status."""
+    guild = ctx.guild
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    window = int(await get_setting("maintenance_window_days"))
+    required = int(await get_setting("pings_to_gain"))
+
+    await ctx.send("🔄 Gathering stats...")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC"
+        )
+        all_pingers = await cursor.fetchall()
+
+        cursor = await db.execute(
+            f"SELECT user_id, COUNT(*) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
+            (days_ago_iso(window),)
+        )
+        recent_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
+
+        cursor = await db.execute("SELECT user_id FROM whitelist")
+        whitelisted = {row[0] for row in await cursor.fetchall()}
+
+    hunter_count = 0
+    ready_count = 0
+    near_count = 0
+    inactive_count = 0
+    entries = []
+
+    for user_id, total in all_pingers:
+        member = guild.get_member(user_id)
+        if not member:
+            continue
+
+        has_hunter = hunter_role in member.roles if hunter_role else False
+        is_wl = user_id in whitelisted
+        recent = recent_pingers.get(user_id, 0)
+        maintain_req = int(await get_setting("pings_to_maintain"))
+
+        if has_hunter:
+            hunter_count += 1
+        if total >= required or is_wl:
+            ready_count += 1
+        elif total >= required * 0.7:
+            near_count += 1
+        else:
+            inactive_count += 1
+
+        entries.append((member.display_name, total, recent, has_hunter, is_wl, user_id))
+
+    total_active = len(all_pingers)
+    embed = discord.Embed(title="Server Activity Overview", color=discord.Color.blue())
+    embed.add_field(name="Total Active Users", value=str(total_active), inline=True)
+    embed.add_field(name="Pokemon Hunter Holders", value=str(hunter_count), inline=True)
+    embed.add_field(name="Whitelisted", value=str(len(whitelisted)), inline=True)
+    embed.add_field(name=f"Ready ({required}+ pings)", value=str(ready_count), inline=True)
+    embed.add_field(name=f"Near Ready (70%+)", value=str(near_count), inline=True)
+    embed.add_field(name="Below Threshold", value=str(inactive_count), inline=True)
+
+    top20 = entries[:20]
+    if top20:
+        leaderboard = ""
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (name, total, recent, has_h, is_wl, uid) in enumerate(top20):
+            prefix = medals[i] if i < 3 else f"**{i+1}.**"
+            status = "✅" if has_h else ("⭐" if is_wl else "")
+            leaderboard += f"{prefix} {name} — {total} total, {recent} recent {status}\n"
+        embed.add_field(name="Top 20 by Total Pings", value=leaderboard, inline=False)
+
+    embed.set_footer(text=f"✅ = Hunter | ⭐ = Whitelisted | Req: {required} pings")
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="mee6sync")
