@@ -1363,8 +1363,8 @@ async def predict_cmd(ctx, *args):
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, store FROM pings WHERE (store LIKE ? OR store = ?) AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", s, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    "SELECT timestamp, message_content, store FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(message_content) LIKE ? OR LOWER(store) LIKE ?) AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    (f"%{s}%", s, f"%{location}%", f"%{location}%", ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
             else:
                 cursor = await db.execute(
@@ -1556,8 +1556,8 @@ async def restockhistory_cmd(ctx, *args):
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store FROM pings WHERE (store LIKE ? OR store = ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", s, cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    "SELECT timestamp, message_content, user_id, store FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(message_content) LIKE ? OR LOWER(store) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
             else:
                 cursor = await db.execute(
