@@ -613,6 +613,7 @@ async def mylevel_cmd(ctx):
     chat_count = await count_in_window("chat", user.id, int(await get_setting("chat_window_days")))
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     has_hunter = hunter_role in user.roles if hunter_role else False
+    required = int(await get_setting("pings_to_gain"))
 
     embed = discord.Embed(title=f"Your Activity — {user.display_name}", color=discord.Color.purple())
     embed.add_field(name="Total Pings", value=str(total), inline=True)
@@ -621,8 +622,15 @@ async def mylevel_cmd(ctx):
     embed.add_field(name="Chat Messages", value=str(chat_count), inline=True)
     embed.add_field(name="Pokemon Hunter", value="✅ Yes" if has_hunter else "❌ No", inline=True)
 
-    status = "✅ Maintaining" if has_hunter else "⏳ Not yet"
-    embed.add_field(name="Status", value=status, inline=True)
+    if has_hunter:
+        status = "✅ Maintaining"
+    else:
+        needed = max(0, required - total)
+        if needed > 0:
+            status = f"⏳ {needed} more ping(s) needed ({total}/{required})"
+        else:
+            status = "⏳ Eligible — run `!sync` to get role"
+    embed.add_field(name="Status", value=status, inline=False)
     await ctx.send(embed=embed)
 
 
