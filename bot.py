@@ -187,8 +187,11 @@ STORE_ABBREVIATIONS = {
     "dt": "dollar-tree-dollar-general-family-dollar",
     "fd": "dollar-tree-dollar-general-family-dollar",
     "dollar general": "dollar-tree-dollar-general-family-dollar",
+    "dollar-general": "dollar-tree-dollar-general-family-dollar",
     "dollar tree": "dollar-tree-dollar-general-family-dollar",
+    "dollar-tree": "dollar-tree-dollar-general-family-dollar",
     "family dollar": "dollar-tree-dollar-general-family-dollar",
+    "family-dollar": "dollar-tree-dollar-general-family-dollar",
     "familydollar": "dollar-tree-dollar-general-family-dollar",
     "familydollars": "dollar-tree-dollar-general-family-dollar",
     "@familydollar": "dollar-tree-dollar-general-family-dollar",
@@ -197,6 +200,8 @@ STORE_ABBREVIATIONS = {
     "@dollar tree": "dollar-tree-dollar-general-family-dollar",
     "@dollar-general": "dollar-tree-dollar-general-family-dollar",
     "@dollar-tree": "dollar-tree-dollar-general-family-dollar",
+    "@dollargeneral": "dollar-tree-dollar-general-family-dollar",
+    "@dollartree": "dollar-tree-dollar-general-family-dollar",
     "ace": "others",
     "ace hardware": "others",
     "bn": "barnes-and-noble",
@@ -1410,17 +1415,33 @@ async def predict_cmd(ctx, *args):
         # Check if first arg is a role mention — resolve to role name
         if ctx.message.role_mentions:
             store = ctx.message.role_mentions[0].name.lower()
+            if len(non_digit_args) > 1:
+                location = " ".join(non_digit_args[1:]).lower()
         else:
-            store = non_digit_args[0].lower().lstrip("@").strip("<&>")
-        if len(non_digit_args) > 1:
-            location = " ".join(non_digit_args[1:]).lower()
+            # Try multi-word store first (e.g. "dollar general", "best buy")
+            joined = " ".join(a.lower().lstrip("@").strip("<&>") for a in non_digit_args)
+            store = None
+            location = None
+            # Try progressively shorter prefixes as store names
+            for i in range(len(non_digit_args), 0, -1):
+                candidate = " ".join(a.lower().lstrip("@").strip("<&>") for a in non_digit_args[:i])
+                if candidate in STORE_ABBREVIATIONS or candidate in store_list:
+                    store = candidate
+                    if i < len(non_digit_args):
+                        location = " ".join(non_digit_args[i:]).lower()
+                    break
+            if store is None:
+                store = non_digit_args[0].lower().lstrip("@").strip("<&>")
+                if len(non_digit_args) > 1:
+                    location = " ".join(non_digit_args[1:]).lower()
+
+        # Resolve abbreviations
+        if store and store in STORE_ABBREVIATIONS:
+            store = STORE_ABBREVIATIONS[store]
 
     if store and store not in store_list:
-        if store in STORE_ABBREVIATIONS:
-            store = STORE_ABBREVIATIONS[store]
-        elif store not in store_list:
-            await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
-            return
+        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
+        return
 
     stores_to_check = [store] if store else store_list
     await ctx.send(f"🔄 Analyzing restock patterns...")
@@ -1589,18 +1610,30 @@ async def restockhistory_cmd(ctx, *args):
     if non_digit_args:
         if ctx.message.role_mentions:
             store = ctx.message.role_mentions[0].name.lower()
+            if len(non_digit_args) > 1:
+                location = " ".join(non_digit_args[1:]).lower()
         else:
-            store = non_digit_args[0].lower().lstrip("@").strip("<&>")
-        if len(non_digit_args) > 1:
-            location = " ".join(non_digit_args[1:]).lower()
+            joined = " ".join(a.lower().lstrip("@").strip("<&>") for a in non_digit_args)
+            store = None
+            location = None
+            for i in range(len(non_digit_args), 0, -1):
+                candidate = " ".join(a.lower().lstrip("@").strip("<&>") for a in non_digit_args[:i])
+                if candidate in STORE_ABBREVIATIONS or candidate in store_list:
+                    store = candidate
+                    if i < len(non_digit_args):
+                        location = " ".join(non_digit_args[i:]).lower()
+                    break
+            if store is None:
+                store = non_digit_args[0].lower().lstrip("@").strip("<&>")
+                if len(non_digit_args) > 1:
+                    location = " ".join(non_digit_args[1:]).lower()
+
+        if store and store in STORE_ABBREVIATIONS:
+            store = STORE_ABBREVIATIONS[store]
 
     if store and store not in store_list:
-        # Check abbreviations
-        if store in STORE_ABBREVIATIONS:
-            store = STORE_ABBREVIATIONS[store]
-        elif store not in store_list:
-            await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
-            return
+        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
+        return
 
     cutoff = days_ago_iso(days)
     stores_to_check = [store] if store else store_list
