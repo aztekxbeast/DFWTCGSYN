@@ -1328,17 +1328,26 @@ async def predict_cmd(ctx, store: str = None):
                 loc = "General"
                 if content:
                     c = content.lower()
-                    # Remove the @location/@oos prefix and store mention
-                    c = re.sub(r'@(location|oos)\s*', '', c)
-                    c = re.sub(r'\b' + re.escape(s.replace('-', ' ')) + r'\b', '', c)
-                    c = re.sub(r'\b' + re.escape(s) + r'\b', '', c)
-                    # Clean up common words
-                    for w in ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'etb', 'collection']:
-                        c = re.sub(r'\b' + w + r'\b', '', c)
-                    c = re.sub(r'[^\w\s]', ' ', c).strip()
-                    c = re.sub(r'\s+', ' ', c).strip()
-                    if c and len(c) > 1:
-                        loc = c.title()
+                    # Skip bot messages or very long messages (likely descriptions)
+                    if len(c) > 150 or "bot" in c[:20] or "server" in c[:20] or "channel" in c[:20]:
+                        pass
+                    elif '@location' in c or '@oos' in c:
+                        # Remove the @location/@oos prefix
+                        c = re.sub(r'@(location|oos)\s*', '', c)
+                        # Remove store name
+                        c = re.sub(r'\b' + re.escape(s.replace('-', ' ')) + r'\b', '', c)
+                        c = re.sub(r'\b' + re.escape(s) + r'\b', '', c)
+                        # Clean up common words
+                        stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want']
+                        for w in stop_words:
+                            c = re.sub(r'\b' + w + r'\b', '', c)
+                        c = re.sub(r'[^\w\s]', ' ', c).strip()
+                        c = re.sub(r'\s+', ' ', c).strip()
+                        # Take only first few words as location (max 3 words)
+                        words = c.split()[:3]
+                        c = ' '.join(words)
+                        if c and len(c) > 1 and len(c) < 40:
+                            loc = c.title()
 
                 ld = location_data[loc]
                 ld["pings"] += 1
@@ -1407,9 +1416,20 @@ async def predict_cmd(ctx, store: str = None):
             embed.add_field(name="Last Confirmed", value=last_date, inline=True)
 
             sorted_locs = sorted(location_data.items(), key=lambda x: x[1]["pings"], reverse=True)
-            if len(sorted_locs) > 1 and (sorted_locs[0][0] != "General" or len(sorted_locs) > 2):
+            # Filter out junk locations - keep only ones that look like real place names
+            real_locs = []
+            for loc_name, ld in sorted_locs:
+                if loc_name == "General":
+                    continue
+                if len(loc_name) > 30:
+                    continue
+                if any(c.isdigit() for c in loc_name):
+                    continue
+                real_locs.append((loc_name, ld))
+
+            if real_locs:
                 loc_lines = []
-                for loc_name, ld in sorted_locs[:8]:
+                for loc_name, ld in real_locs[:8]:
                     loc_dates = sorted(ld["dates"])
                     if len(loc_dates) >= 2:
                         loc_gaps = []
