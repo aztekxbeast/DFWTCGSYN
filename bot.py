@@ -49,7 +49,8 @@ async def init_db():
                 channel_id INTEGER NOT NULL,
                 store TEXT,
                 mention_type TEXT NOT NULL,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                message_content TEXT
             );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,11 +221,11 @@ def extract_store_from_text(message):
     return store_mentions
 
 
-async def log_ping(user_id, channel_id, store, mention_type):
+async def log_ping(user_id, channel_id, store, mention_type, content=None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (user_id, channel_id, store, mention_type, now_iso())
+            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, channel_id, store, mention_type, now_iso(), content)
         )
         await db.commit()
 
@@ -413,7 +414,7 @@ async def on_message(message):
     store_mentions = extract_store_from_text(message)
     if store_mentions:
         for mention in store_mentions:
-            await log_ping(user_id, channel_id, mention["store"], mention["role_type"])
+            await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500])
         await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
@@ -1370,7 +1371,7 @@ async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             cursor = await db.execute(
-                "SELECT timestamp FROM pings WHERE store = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                "SELECT timestamp, message_content, user_id FROM pings WHERE store = ? AND timestamp >= ? ORDER BY timestamp ASC",
                 (s, cutoff)
             )
             rows = await cursor.fetchall()
@@ -1379,16 +1380,23 @@ async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
                 continue
 
             found_any = True
-            daily_counts = {}
-            for (ts,) in rows:
+            daily_data = {}
+            for (ts, content, uid) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
                     continue
-                date_str = dt.strftime("%Y-%m-%d (%a)")
-                daily_counts[date_str] = daily_counts.get(date_str, 0) + 1
+                date_key = dt.strftime("%Y-%m-%d (%a)")
+                time_str = dt.strftime("%I:%M %p")
+                if date_key not in daily_data:
+                    daily_data[date_key] = []
+                daily_data[date_key].append({
+                    "time": time_str,
+                    "content": content[:100] if content else None,
+                    "user": uid
+                })
 
-            sorted_dates = sorted(daily_counts.items())
+            sorted_dates = sorted(daily_data.items())
 
             embed = discord.Embed(
                 title=f"Restock History — {s.title()} (last {days}d)",
@@ -1396,15 +1404,25 @@ async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
             )
 
             history_text = ""
-            for date_str, count in sorted_dates[-20:]:
-                bar = "█" * min(count, 20)
-                history_text += f"`{date_str}` — {count} pings {bar}\n"
+            for date_key, entries in sorted_dates[-15:]:
+                times = [e["time"] for e in entries]
+                time_range = f"{times[0]}" if len(times) == 1 else f"{times[0]} - {times[-1]}"
+                history_text += f"**{date_key}** — {len(entries)} ping(s) @ {time_range}\n"
 
-            if len(sorted_dates) > 20:
-                history_text = f"*Showing last 20 of {len(sorted_dates)} dates*\n\n" + history_text
+                for e in entries[-3:]:
+                    if e["content"]:
+                        short = e["content"][:80].replace("\n", " ")
+                        history_text += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
+
+                if len(entries) > 3:
+                    history_text += f"└ ...and {len(entries) - 3} more\n"
+                history_text += "\n"
+
+            if len(sorted_dates) > 15:
+                history_text = f"*Showing last 15 of {len(sorted_dates)} dates*\n\n" + history_text
 
             embed.description = history_text
-            embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_counts)} days")
+            embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_data)} days")
             await ctx.send(embed=embed)
 
     if not found_any:
