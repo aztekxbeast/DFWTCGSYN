@@ -1353,57 +1353,62 @@ async def predict_cmd(ctx, store: str = None):
 @commands.has_role(ADMIN_ROLE_ID)
 async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
     """View recent ping history for a store to identify restock dates.
+    Usage: !restockhistory (all stores)
     Usage: !restockhistory walmart
     Usage: !restockhistory walmart 60 (last 60 days)"""
     store_list = CONFIG.get("store_channels", [])
-
-    if not store or store.lower() not in store_list:
-        await ctx.send(f"❌ Usage: `!restockhistory <store> [days]`\nValid stores: {', '.join(store_list)}")
-        return
-
-    store = store.lower()
     cutoff = days_ago_iso(days)
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT timestamp FROM pings WHERE store = ? AND timestamp >= ? ORDER BY timestamp ASC",
-            (store, cutoff)
-        )
-        rows = await cursor.fetchall()
-
-    if not rows:
-        await ctx.send(f"No pings found for {store} in the last {days} days.")
+    if store and store.lower() not in store_list:
+        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
         return
 
-    dates_seen = set()
-    daily_counts = {}
-    for (ts,) in rows:
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            continue
-        date_str = dt.strftime("%Y-%m-%d (%a)")
-        dates_seen.add(date_str)
-        daily_counts[date_str] = daily_counts.get(date_str, 0) + 1
+    stores_to_check = [store.lower()] if store else store_list
+    await ctx.send(f"🔄 Loading restock history...")
+    found_any = False
 
-    sorted_dates = sorted(daily_counts.items())
+    async with aiosqlite.connect(DB_PATH) as db:
+        for s in stores_to_check:
+            cursor = await db.execute(
+                "SELECT timestamp FROM pings WHERE store = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                (s, cutoff)
+            )
+            rows = await cursor.fetchall()
 
-    embed = discord.Embed(
-        title=f"Restock History — {store.title()} (last {days}d)",
-        color=discord.Color.green()
-    )
+            if not rows:
+                continue
 
-    history_text = ""
-    for date_str, count in sorted_dates[-20:]:
-        bar = "█" * min(count, 20)
-        history_text += f"`{date_str}` — {count} pings {bar}\n"
+            found_any = True
+            daily_counts = {}
+            for (ts,) in rows:
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                date_str = dt.strftime("%Y-%m-%d (%a)")
+                daily_counts[date_str] = daily_counts.get(date_str, 0) + 1
 
-    if len(sorted_dates) > 20:
-        history_text = f"*Showing last 20 of {len(sorted_dates)} dates*\n\n" + history_text
+            sorted_dates = sorted(daily_counts.items())
 
-    embed.description = history_text
-    embed.set_footer(text=f"Total: {len(rows)} pings across {len(dates_seen)} days")
-    await ctx.send(embed=embed)
+            embed = discord.Embed(
+                title=f"Restock History — {s.title()} (last {days}d)",
+                color=discord.Color.green()
+            )
+
+            history_text = ""
+            for date_str, count in sorted_dates[-20:]:
+                bar = "█" * min(count, 20)
+                history_text += f"`{date_str}` — {count} pings {bar}\n"
+
+            if len(sorted_dates) > 20:
+                history_text = f"*Showing last 20 of {len(sorted_dates)} dates*\n\n" + history_text
+
+            embed.description = history_text
+            embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_counts)} days")
+            await ctx.send(embed=embed)
+
+    if not found_any:
+        await ctx.send(f"No pings found in the last {days} days.")
 
 @bot.event
 async def on_command_error(ctx, error):
