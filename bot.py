@@ -160,6 +160,46 @@ def extract_store_from_channel(channel_name):
     return channel_name
 
 
+def extract_location_from_text(content):
+    """Extract location words from a ping message."""
+    if not content:
+        return None
+    c = content.lower()
+    # Strip Discord mentions: <@!123>, <@&123>, <@123>
+    c = re.sub(r'<@!?\d+>', ' ', c)
+    c = re.sub(r'<@&\d+>', ' ', c)
+    # Strip @location/@oos prefix
+    c = re.sub(r'@(location|oos)\s*', ' ', c)
+    # Remove store names
+    store_list = CONFIG.get("store_channels", [])
+    for store in store_list:
+        c = c.replace(store, ' ').replace(store.replace('-', ' '), ' ')
+    # Remove abbreviations
+    for abbr in STORE_ABBREVIATIONS:
+        c = c.replace(abbr, ' ')
+    # Clean common words
+    stop_words = [
+        'at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found',
+        'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin',
+        'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet',
+        'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available',
+        'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking',
+        'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location',
+        'pokémon', 'pokemon', 'is', 'stocking', 'stock', 'no', 'not',
+        'but', 'and', 'or', 'with', 'for', 'to', 'of', 'it', 'be',
+        'supposedly', 'outside', 'waiting', 'people', 'line', 'about',
+        'drove', 'asking', 'deep', 'back', 'front'
+    ]
+    for w in stop_words:
+        c = re.sub(r'\b' + re.escape(w) + r'\b', ' ', c)
+    # Remove non-alpha characters
+    c = re.sub(r'[^\w\s]', ' ', c).strip()
+    c = re.sub(r'\s+', ' ', c).strip()
+    # Take only first few words as location (max 2 words)
+    words = c.split()[:2]
+    return ' '.join(words) if words else None
+
+
 def parse_mentioned_stores(message):
     store_mentions = []
     for role in message.role_mentions:
@@ -540,22 +580,7 @@ async def on_message(message):
         store_mentions = extract_store_from_text(message)
         if store_mentions:
             # Extract location from message content
-            content_lower = message.content.lower()
-            loc = None
-            c = content_lower
-            c = re.sub(r'@(location|oos)\s*', '', c)
-            store_list = CONFIG.get("store_channels", [])
-            for store in store_list:
-                c = c.replace(store, ' ').replace(store.replace('-', ' '), ' ')
-            for abbr in STORE_ABBREVIATIONS:
-                c = c.replace(abbr, ' ')
-            stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location', 'pokémon', 'pokemon', 'is', 'stocking', 'stock']
-            for w in stop_words:
-                c = re.sub(r'\b' + w + r'\b', ' ', c)
-            c = re.sub(r'[^\w\s]', ' ', c).strip()
-            c = re.sub(r'\s+', ' ', c).strip()
-            words = c.split()[:3]
-            loc = ' '.join(words) if words else None
+            loc = extract_location_from_text(message.content)
 
             for mention in store_mentions:
                 await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500], loc)
@@ -2019,23 +2044,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 mention_type = "location" if "location" in role_names else "oos"
 
                 # Extract location from message
-                loc = None
-                c = content_lower
-                # Remove @location/@oos prefix
-                c = re.sub(r'@(location|oos)\s*', '', c)
-                # Remove store names and abbreviations
-                for store in store_list:
-                    c = c.replace(store, ' ').replace(store.replace('-', ' '), ' ')
-                for abbr in STORE_ABBREVIATIONS:
-                    c = c.replace(abbr, ' ')
-                # Clean common words
-                stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location', 'pokémon', 'pokemon']
-                for w in stop_words:
-                    c = re.sub(r'\b' + w + r'\b', ' ', c)
-                c = re.sub(r'[^\w\s]', ' ', c).strip()
-                c = re.sub(r'\s+', ' ', c).strip()
-                words = c.split()[:3]
-                loc = ' '.join(words) if words else None
+                loc = extract_location_from_text(message.content)
 
                 for store in matched_stores:
                     await db.execute(
