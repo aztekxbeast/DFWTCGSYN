@@ -1559,12 +1559,23 @@ async def restockhistory_cmd(ctx, *args):
                     "SELECT timestamp, message_content, user_id, store FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(message_content) LIKE ? OR LOWER(store) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
+                rows = await cursor.fetchall()
+                if not rows:
+                    cursor = await db.execute(
+                        "SELECT timestamp, message_content, user_id, store FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                        (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    )
+                    rows = await cursor.fetchall()
+                    location_not_found = True
+                else:
+                    location_not_found = False
             else:
                 cursor = await db.execute(
                     "SELECT timestamp, message_content, user_id, store FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
-            rows = await cursor.fetchall()
+                rows = await cursor.fetchall()
+                location_not_found = False
 
             if not rows:
                 continue
@@ -1766,6 +1777,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
             added = 0
             skipped = 0
+            seen_messages = set()
             async for message in channel.history(limit=2000, after=cutoff):
                 if message.author.bot:
                     continue
@@ -1773,14 +1785,19 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 content_lower = message.content.lower()
                 has_ping = "@location" in content_lower or "@oos" in content_lower
 
+                if not has_ping:
+                    continue
+
+                msg_key = f"{message.author.id}:{message.channel.id}:{message.content[:200]}"
+                if msg_key in seen_messages:
+                    continue
+                seen_messages.add(msg_key)
+
                 matched_stores = []
-                # Check full store names
                 for store in store_list:
                     if store in content_lower or store.replace("-", " ") in content_lower:
                         matched_stores.append(store)
-                # Check abbreviations
                 for abbr, store_channel in STORE_ABBREVIATIONS.items():
-                    word_boundary = f" {abbr} " or f"{abbr} " or f" {abbr}"
                     if abbr in content_lower.split() and store_channel not in matched_stores:
                         matched_stores.append(store_channel)
 
