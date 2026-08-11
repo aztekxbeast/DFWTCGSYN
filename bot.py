@@ -82,6 +82,11 @@ async def init_db():
                 timestamp TEXT NOT NULL
             );
         """)
+        try:
+            await db.execute("ALTER TABLE pings ADD COLUMN message_content TEXT")
+        except Exception:
+            pass
+        await db.commit()
         for key, value in CONFIG.items():
             await db.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
