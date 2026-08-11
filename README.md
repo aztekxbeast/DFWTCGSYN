@@ -1,99 +1,101 @@
 # PokeHunt Discord Bot
 
-**Implementation:** Option A — Everything in one custom bot, zero subscriptions (~$0/month)
-
-A single Python bot that handles ping tracking, media tracking, chat activity tracking, and automatic role management. No web dashboard, no domain, no paid services.
+A single Python bot that tracks ping activity, media posts, and chat messages to automatically manage the **Pokemon Hunter** role in your Discord server. Deployed on Fly.io.
 
 ---
 
 ## What This Bot Does
 
-One bot does everything:
 - Counts `@location` / `@OOS` role mentions per user (ping tracker)
 - Counts attachment posts in #pulls / #success (media tracker)
 - Counts chat messages (chat tracker)
 - Auto-grants Pokemon Hunter role at 10 total pings
-- Auto-revokes Hunter role if activity drops below thresholds
+- Daily maintenance checks keep Hunters active
 - Grants Hunter head-start to MEE6 Silver+ members on join
-- All admin settings adjustable via slash commands (no code edits)
+- Restock prediction engine with location-based pattern analysis
+- Deep backfill to scan historical messages for past pings
+- All admin settings adjustable via `!set` commands (no code edits)
 
-### Channel Tracking (What Counts as Pings)
+---
+
+## Channel Tracking
+
+### Store Channels (Ping Tracking)
+Ping tracking is active in these channels — when someone mentions `@location` / `@OOS` (or types it as text) with a store name, it counts as a ping:
+
+| Channel | What Triggers a Ping |
+|---------|---------------------|
+| **#academy** | `@location academy` or `@oos academy` |
+| **#aldi** | `@location aldi` or `@oos aldi` |
+| **#amazon** | `@location amazon` or `@oos amazon` |
+| **#barnes-and-noble** | `@location barnes and noble` or abbreviations `bn`, `b&n` |
+| **#best-buy** | `@location best buy` or abbreviation `bb` |
+| **#dollar-tree-dollar-general-family-dollar** | `@location` + store name or abbreviations `dg`, `dt`, `fd` |
+| **#gamestop** | `@location gamestop` or abbreviation `gs` |
+| **#kroger** | `@location kroger` or abbreviation `km` |
+| **#micro-center** | `@location micro center` or abbreviation `mc` |
+| **#mitsuwa** | `@location mitsuwa` |
+| **#others** | `@location` + any store name |
+| **#other-pokémon** | `@location` + any store name |
+| **#pokemon-center** | `@location pokemon center` or abbreviations `pc`, `pk` |
+| **#sam's-costco** | `@location sam's` or abbreviations `sam`, `sams`, `costco` |
+| **#scheels** | `@location scheels` |
+| **#target** | `@location target` |
+| **#walgreens-cvs** | `@location walgreens` or abbreviations `wc`, `wag` |
+| **#walmart** | `@location walmart` |
+
+### Location Words
+Vague location mentions (e.g. "alliance", "glade", "watauga", "beach") in store channels are tracked as pings for that store. Use `!addlocation` to add more.
+
+### Other Tracked Channels
 
 | Channel | Ping Tracking | Media Tracking | Chat Tracking |
 |---------|---------------|----------------|---------------|
 | **#server-announcements** | ❌ NOT tracked | ❌ | ❌ |
+| **#get-roles** | ❌ NOT tracked | ❌ | ❌ |
 | **#general-announcements** | ✅ Tracked | ❌ | ✅ |
 | **#open-hunting** | ✅ Tracked | ❌ | ✅ |
 | **#training-hunting** | ✅ Tracked | ❌ | ✅ |
 | **#general-chat** | ✅ Tracked | ❌ | ✅ |
 | **#ft-worth-area-hunts** | ✅ Tracked | ❌ | ✅ |
 | **#dallas-area-hunts** | ✅ Tracked | ❌ | ✅ |
-| **#walmart** | ✅ Tracked | ❌ | ✅ |
-| **#target** | ✅ Tracked | ❌ | ✅ |
-| **#barnes-noble** | ✅ Tracked | ❌ | ✅ |
-| **#best-buy** | ✅ Tracked | ❌ | ✅ |
-| **#other-stores** | ✅ Tracked | ❌ | ✅ |
 | **#pulls** | ✅ Tracked | ✅ | ✅ |
 | **#success** | ✅ Tracked | ✅ | ✅ |
 
-**Key Points:**
-- **#server-announcements** is the ONLY channel NOT tracked for pings
-- All other text channels track `@location` / `@OOS` mentions as pings
-- Media tracking (photos) only counts in #pulls and #success
-- Chat tracking counts in all non-announcement channels
+---
+
+## Access Rules
+
+### Gaining Pokemon Hunter Role
+- **10 total pings** (`@location` or `@OOS` mentions) to unlock
+- Once you hit 10, you get the role automatically
+- Announcement posted in #server-announcements when granted
+
+### Maintaining Pokemon Hunter Role (checked daily)
+One of these must be true within the window:
+- **4+ pings** within 10 days, OR
+- **4+ media posts** within 10 days, OR
+- **30+ chat messages** within 7 days, OR
+- **Whitelisted** by an admin (bypasses all checks)
+
+### MEE6 Head Start
+- Members joining with MEE6 **Silver role or higher** are auto-granted Hunter immediately
 
 ---
 
-## Option A Step-by-Step
-
-### Step 1: Create the Discord Application
-- Go to discord.com/developers → New Application → Bot
-- Copy the bot token (paste into `.env`)
-- Invite bot to server with permissions: `Manage Roles`, `Read Message History`, `Send Messages`, `View Channels`, `Mention Everyone`
-
-### Step 2: Build the Bot (done — see `bot.py`)
-- **Logger:** `on_message` → if message mentions `@location` or `@OOS` in a store channel → log ping. If attachment in #pulls → log media. If in chat channel → log chat.
-- **Role access engine:** Daily cron checks all members. Grant Hunter at 10 pings. Revoke if <4 pings, <4 media posts, <30 chats in their windows. Whitelist bypasses everything.
-- **Commands:** `!pings`, `!pingtotal`, `!pingleaderboard`, `!whitelist add/remove`, `!set`, `!settings`, `!sync`, `!mee6sync`
-- **MEE6 sync:** On member join, if they have MEE6 Silver role → auto-grant Hunter.
-
-### Step 3: Channel Structure (Discord settings, no code)
-- **Pokemon Trainer role (default on join):** #server-announcements, #general-announcements, #open-hunting, #training-hunting, #general-chat
-- **Pokemon Hunter role (unlocks after earning):** #walmart, #target, #barnes-noble, #pulls, all store channels
-- Store channels require @location + store name, or @OOS — mods enforce, bot counts
-
-### Step 4: Ticketing — skip building it
-- Add **TicketTool** (free) → `/setup` → pick a support category
-- Don't fix what ain't broken
-
-### Step 5: Questionnaire — use Discord's built-in
-- Server Settings → Onboarding → buttons for Area / TCG / Pokefam
-- Zero code, zero cost
-
-### Step 6: Free 24/7 Hosting
-- **Oracle Cloud Always Free** — ARM, 4 cores, 24GB RAM, permanently free
-- Sign up: oracle.com/cloud/free
-- Deploy with `systemd` + auto-restart
-- If Oracle rejects signup → **Vultr $3.50/mo** fallback
-
-### Step 7: Skip domain and web dashboard for v1
-- All admin settings via `!set` slash commands in a hidden #admin channel
-- Add website later only if you outgrow it
-
----
-
-## Bot Commands
+## Commands
 
 ### User Commands
 
 | Command | Description |
 |---------|-------------|
-| `!pings` | Your ping count for the past 14 days |
-| `!pings @username` | Another user's ping count (past 14 days) |
-| `!pingtotal` | Your total pings (all time) |
-| `!pingtotal @username` | Another user's total pings (all time) |
-| `!pingleaderboard` | Top ping contributors (all time) |
-| `!mylevel` | Your current role + activity status |
+| `!pings` | Your ping count (last 10 days) |
+| `!pings @user` | Check someone else's pings |
+| `!pingtotal` | Your total lifetime pings |
+| `!pingtotal @user` | Someone else's total pings |
+| `!pingleaderboard` | Top ping contributors |
+| `!mylevel` | Full activity breakdown + progress to Hunter |
+| `!helpme` | Show all commands |
 
 ### Admin Commands
 
@@ -102,58 +104,85 @@ One bot does everything:
 | `!whitelist add @user` | Grant permanent Hunter access |
 | `!whitelist remove @user` | Remove from whitelist |
 | `!resetpings @user` | Clear a user's ping history |
-| `!resetallpings` | Clear ALL ping history (dangerous) |
-| `!set <key> <value>` | Change a threshold setting (no code edit needed) |
+| `!resetallpings` | Clear ALL ping history (requires `!confirm`) |
+| `!stats @user` | Detailed stats for a user |
+| `!allstats` | Server-wide activity overview |
+| `!sync` | Run manual access check |
+| `!set <key> <value>` | Change a setting |
 | `!settings` | Show current settings |
-| `!sync` | Run access check manually (grant/revoke) |
 | `!mee6sync` | Sync MEE6 Silver+ roles now |
+| `!mee6import` | Import MEE6 level data via API |
+| `!mee6scan` | Scan messages for MEE6 level-up history |
+| `!messagescan` | Scan message history for access grants |
+
+### Restock Tracking Commands
+
+| Command | Description |
+|---------|-------------|
+| `!predict <store>` | Predict next restock with per-location breakdown |
+| `!predict <store> <location>` | Predict for specific location (e.g. `!predict target alliance`) |
+| `!rh <store>` | Recent restock dates (alias for `!restockhistory`) |
+| `!rh <store> <location>` | Filter by location (e.g. `!rh walmart beach`) |
+| `!deepbackfill` | Scan channels for past pings (7 days) |
+| `!deepbackfill 14` | Scan last 14 days |
+| `!backfill` | Backfill message content for old pings |
+
+### Location Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `!addlocation <word>` | Add a location word (e.g. `!addlocation renaissance`) |
+| `!removelocation <word>` | Remove a location word |
+| `!listlocations` | Show all tracked location words |
 
 ---
 
-## Access Rules
+## Bot Settings
 
-### Gaining Pokemon Hunter Role
-- **10 total pings** (`@location` or `@OOS` mentions) to unlock
-- Once you hit 10, you get the role. You can lose it if inactive, then re-earn it.
+All settings stored in `config.json` and adjustable at runtime via `!set`:
 
-### Maintaining Pokemon Hunter Role (checked every 24h)
-One of these must be true within the last 10 days:
-- **4+ pings** (in-store stock or OOS alerts), OR
-- **4+ media posts** (photos in #pulls / #success), OR
-- **30+ chat messages** (in tracked channels), OR
-- **Whitelisted** by an admin
-
-### MEE6 Head Start
-- Members joining with MEE6 **Silver role or higher** are auto-granted Hunter immediately
-
----
-
-## Required Free Bots
-
-| Bot | Purpose | Cost |
-|-----|---------|------|
-| **PokeHunt** (this bot) | Ping tracking + role access | Free (self-hosted) |
-| **MEE6** | Chat XP + Silver role rewards | Free tier |
-| **TicketTool** | Support tickets | Free |
-| **Discord Onboarding** | Role questionnaire | Free (built-in) |
+```json
+{
+  "pings_to_gain": 10,
+  "pings_to_maintain": 4,
+  "maintenance_window_days": 10,
+  "media_to_maintain": 4,
+  "media_channels": ["pulls", "success"],
+  "chat_to_maintain": 30,
+  "chat_window_days": 7,
+  "chat_channels": ["general-chat", "open-hunting", "general"],
+  "store_channels": ["academy", "aldi", "amazon", "barnes-and-noble", "best-buy", "dollar-tree-dollar-general-family-dollar", "gamestop", "kroger", "micro-center", "mitsuwa", "others", "other-pokémon", "pokemon-center", "sam's-costco", "scheels", "target", "walgreens-cvs", "walmart"],
+  "training_channel": "open-hunting",
+  "mee6_level_threshold": 10,
+  "messages_to_gain": 50,
+  "mee6_silver_role_name": "Silver",
+  "pokemon_trainer_role_name": "Pokemon Trainer",
+  "pokemon_hunter_role_name": "Pokemon Hunter",
+  "admin_role_name": "Admin",
+  "mod_role_name": "Moderator",
+  "ping_leaderboard_size": 15,
+  "daily_maintenance_hour": 3,
+  "daily_maintenance_minute": 0
+}
+```
 
 ---
 
 ## Tech Stack
 
-- **Language:** Python 3.10+
+- **Language:** Python 3.14
 - **Library:** discord.py 2.x
-- **Database:** SQLite (no server needed — one file, `data/pokehunt.db`)
-- **Hosting:** Oracle Cloud Always Free (or Vultr $3.50/mo)
+- **Database:** SQLite (auto-created, stored on Fly.io volume)
+- **Hosting:** Fly.io (auto-deployed from GitHub)
 
 ---
 
 ## Setup
 
 ### Prerequisites
-- Python 3.10+ (https://www.python.org/downloads/)
-- Your Discord bot token (from Discord Developer Portal — already set up)
-- Bot invited to server with: `Manage Roles`, `Read Message History`, `Send Messages`, `View Channels`, `Mention Everyone`
+- Python 3.10+ (for local testing)
+- Discord bot token (from Discord Developer Portal)
+- Bot invited with: `Manage Roles`, `Read Message History`, `Send Messages`, `View Channels`, `Mention Everyone`
 
 ### 1. Clone & Install
 ```bash
@@ -168,24 +197,21 @@ cp .env.example .env
 # Edit .env with your bot token, guild ID, role IDs, channel IDs
 ```
 
-### 3. Configure Settings
-Edit `config.json` to set your thresholds:
-```json
-{
-  "pings_to_gain": 10,
-  "pings_to_maintain": 4,
-  "maintenance_window_days": 10,
-  "media_to_maintain": 4,
-  "chat_to_maintain": 30,
-  "chat_window_days": 7
-}
-```
-
-### 4. Run
+### 3. Run Locally
 ```bash
 python bot.py
 ```
-Bot stays online while terminal is running. For 24/7, deploy to Oracle Cloud.
+
+### 4. Deploy to Fly.io
+```bash
+# Install flyctl: https://fly.io/docs/hands-on/install-flyctl/
+flyctl auth login
+flyctl launch    # First time only
+flyctl deploy    # Deploy after changes
+flyctl restart   # If bot is stuck
+```
+
+Bot data persists on a Fly.io volume mounted at `/app/data`.
 
 ---
 
@@ -194,11 +220,13 @@ Bot stays online while terminal is running. For 24/7, deploy to Oracle Cloud.
 ```
 RepoHUB/
   bot.py              # Main bot code (single file)
-  config.json         # Tunable settings — edit this, not the code
+  config.json         # Tunable settings
   .env.example        # Environment variable template
   .env                # Your secrets (DO NOT commit)
   requirements.txt    # Python dependencies
-  data/               # SQLite database (auto-created)
+  Dockerfile          # Docker config for Fly.io
+  fly.toml            # Fly.io deployment config
+  data/               # SQLite database (on Fly.io volume)
   README.md           # This file
 ```
 
@@ -206,25 +234,25 @@ RepoHUB/
 
 ## Database Schema
 
-Everything stored in `data/pokehunt.db` (SQLite, auto-created):
+Everything stored in `data/pokehunt.db` (SQLite):
 
-- **pings** — `(user_id, channel, store, mention_type, timestamp)`
-- **media** — `(user_id, channel, timestamp)`
-- **chat** — `(user_id, channel, timestamp)`
+- **pings** — `(id, user_id, channel_id, store, mention_type, timestamp, message_content, location)`
+- **media** — `(id, user_id, channel_id, timestamp)`
+- **chat** — `(id, user_id, channel_id, timestamp)`
 - **whitelist** — `(user_id, added_by, timestamp)`
 - **settings** — `(key, value)` — mirrors config.json
+- **location_aliases** — `(alias, store, added_by, timestamp)`
 
 ---
 
-## Year 1 Cost
+## Required Bots
 
-- **Bot hosting:** $0 (Oracle Cloud Always Free)
-- **Domain:** $0 (skip for v1)
-- **MEE6:** $0 (free tier)
-- **TicketTool:** $0 (free)
-- **Total: $0/year**
-
-If Oracle Cloud doesn't work out: Vultr $3.50/mo = $42/year.
+| Bot | Purpose | Cost |
+|-----|---------|------|
+| **PokeHunt** (this bot) | Ping tracking + role access + restock predictions | Free (self-hosted) |
+| **MEE6** | Chat XP + Silver role rewards | Free tier |
+| **TicketTool** | Support tickets | Free |
+| **Discord Onboarding** | Role questionnaire | Free (built-in) |
 
 ---
 
@@ -236,7 +264,11 @@ If Oracle Cloud doesn't work out: Vultr $3.50/mo = $42/year.
 - [x] Activity-based role access
 - [x] MEE6 Silver+ sync
 - [x] Admin commands (no code edits needed)
-- [ ] Deploy to Oracle Cloud (24/7 hosting)
+- [x] Deploy to Fly.io (24/7 hosting)
+- [x] Restock prediction engine
+- [x] Deep backfill for historical pings
+- [x] Location tracking and filtering
+- [ ] Per-location prediction confidence windows
 - [ ] Web admin dashboard (Phase 2 — only if needed)
 
 ---
@@ -244,4 +276,3 @@ If Oracle Cloud doesn't work out: Vultr $3.50/mo = $42/year.
 ## Credits
 
 Built for the Pokemon TCG hunting community.
-Option A implementation — zero subscriptions, full automation.
