@@ -180,6 +180,32 @@ def parse_mentioned_stores(message):
     return store_mentions
 
 
+STORE_ABBREVIATIONS = {
+    "dg": "dollar-tree-dollar-general-family-dollar",
+    "dt": "dollar-tree-dollar-general-family-dollar",
+    "fd": "dollar-tree-dollar-general-family-dollar",
+    "dollar general": "dollar-tree-dollar-general-family-dollar",
+    "dollar tree": "dollar-tree-dollar-general-family-dollar",
+    "family dollar": "dollar-tree-dollar-general-family-dollar",
+    "ace": "others",
+    "ace hardware": "others",
+    "bn": "barnes-and-noble",
+    "b&n": "barnes-and-noble",
+    "bb": "best-buy",
+    "gs": "gamestop",
+    "mc": "micro-center",
+    "sam": "sam's-costco",
+    "costco": "sam's-costco",
+    "sams": "sam's-costco",
+    "sam's": "sam's-costco",
+    "wc": "walgreens-cvs",
+    "wag": "walgreens-cvs",
+    "pc": "pokemon-center",
+    "pk": "pokemon-center",
+    "km": "kroger",
+}
+
+
 def extract_store_from_text(message):
     store_mentions = []
     content_lower = message.content.lower()
@@ -211,6 +237,12 @@ def extract_store_from_text(message):
             if store not in store_role_pings:
                 store_role_pings.append(store)
 
+    # Check abbreviations
+    words = content_lower.split()
+    for abbr, store_channel in STORE_ABBREVIATIONS.items():
+        if abbr in words and store_channel not in store_role_pings:
+            store_role_pings.append(store_channel)
+
     # If store roles were pinged directly, log them
     if store_role_pings:
         ping_type = "location"
@@ -234,6 +266,18 @@ def extract_store_from_text(message):
                 "channel": message.channel.name,
                 "store": store
             })
+
+    # Check abbreviations if no store matched yet
+    if not store_mentions:
+        words = content_lower.split()
+        for abbr, store_channel in STORE_ABBREVIATIONS.items():
+            if abbr in words:
+                store_mentions.append({
+                    "role_type": ping_type,
+                    "channel": message.channel.name,
+                    "store": store_channel
+                })
+                break
 
     if not store_mentions and message.channel.name in store_list:
         store_mentions.append({
@@ -1282,29 +1326,51 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
 
 @bot.command(name="predict")
 @commands.has_role(ADMIN_ROLE_ID)
-async def predict_cmd(ctx, store: str = None):
+async def predict_cmd(ctx, *args):
     """Analyze ping patterns and predict next restock for a store.
     Usage: !predict walmart
+    Usage: !predict target alliance (specific location)
     Usage: !predict (shows all stores)"""
     store_list = CONFIG.get("store_channels", [])
+    days = 30
+    store = None
+    location = None
 
-    if store and store.lower() not in store_list:
-        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
-        return
+    non_digit_args = [a for a in args if not a.isdigit()]
+    digit_args = [a for a in args if a.isdigit()]
 
-    stores_to_check = [store.lower()] if store else store_list
+    if digit_args:
+        days = int(digit_args[0])
+    if non_digit_args:
+        store = non_digit_args[0].lower()
+        if len(non_digit_args) > 1:
+            location = " ".join(non_digit_args[1:]).lower()
+
+    if store and store not in store_list:
+        if store in STORE_ABBREVIATIONS:
+            store = STORE_ABBREVIATIONS[store]
+        elif store not in store_list:
+            await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
+            return
+
+    stores_to_check = [store] if store else store_list
     await ctx.send(f"🔄 Analyzing restock patterns...")
 
     from collections import defaultdict
-    import re
     DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
-            cursor = await db.execute(
-                "SELECT timestamp, message_content FROM pings WHERE store = ? ORDER BY timestamp ASC",
-                (s,)
-            )
+            if location:
+                cursor = await db.execute(
+                    "SELECT timestamp, message_content, store FROM pings WHERE (store LIKE ? OR store = ?) AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    (f"%{s}%", s, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT timestamp, message_content, store FROM pings WHERE store LIKE ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    (f"%{s}%", ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                )
             rows = await cursor.fetchall()
 
             if len(rows) < 3:
@@ -1318,7 +1384,7 @@ async def predict_cmd(ctx, store: str = None):
 
             location_data = defaultdict(lambda: {"dates": set(), "day_counts": defaultdict(int), "hour_counts": defaultdict(int), "gaps": [], "pings": 0})
 
-            for (ts, content) in rows:
+            for (ts, content, ping_store) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
@@ -1450,30 +1516,54 @@ async def predict_cmd(ctx, store: str = None):
             await ctx.send(embed=embed)
 
 
-@bot.command(name="restockhistory")
+@bot.command(name="restockhistory", aliases=["rh"])
 @commands.has_role(ADMIN_ROLE_ID)
-async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
+async def restockhistory_cmd(ctx, *args):
     """View recent ping history for a store to identify restock dates.
     Usage: !restockhistory (all stores)
-    Usage: !restockhistory walmart
-    Usage: !restockhistory walmart 60 (last 60 days)"""
+    Usage: !restockhistory target
+    Usage: !restockhistory target alliance (specific location)
+    Usage: !restockhistory target 60 (last 60 days)"""
     store_list = CONFIG.get("store_channels", [])
+    days = 30
+    store = None
+    location = None
+
+    non_digit_args = [a for a in args if not a.isdigit()]
+    digit_args = [a for a in args if a.isdigit()]
+
+    if digit_args:
+        days = int(digit_args[0])
+    if non_digit_args:
+        store = non_digit_args[0].lower()
+        if len(non_digit_args) > 1:
+            location = " ".join(non_digit_args[1:]).lower()
+
+    if store and store not in store_list:
+        # Check abbreviations
+        if store in STORE_ABBREVIATIONS:
+            store = STORE_ABBREVIATIONS[store]
+        elif store not in store_list:
+            await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
+            return
+
     cutoff = days_ago_iso(days)
-
-    if store and store.lower() not in store_list:
-        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
-        return
-
-    stores_to_check = [store.lower()] if store else store_list
+    stores_to_check = [store] if store else store_list
     await ctx.send(f"🔄 Loading restock history...")
     found_any = False
 
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
-            cursor = await db.execute(
-                "SELECT timestamp, message_content, user_id FROM pings WHERE store = ? AND timestamp >= ? AND channel_id NOT IN (?, ?) AND message_content IS NOT NULL AND (LOWER(message_content) LIKE '%location%' OR LOWER(message_content) LIKE '%oos%') ORDER BY timestamp ASC",
-                (s, cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
-            )
+            if location:
+                cursor = await db.execute(
+                    "SELECT timestamp, message_content, user_id, store FROM pings WHERE (store LIKE ? OR store = ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    (f"%{s}%", s, cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT timestamp, message_content, user_id, store FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                )
             rows = await cursor.fetchall()
 
             if not rows:
@@ -1684,16 +1774,18 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 has_ping = "@location" in content_lower or "@oos" in content_lower
 
                 matched_stores = []
-                if has_ping:
-                    for store in store_list:
-                        if store in content_lower or store.replace("-", " ") in content_lower:
-                            matched_stores.append(store)
-                    if not matched_stores and channel_name in store_list:
-                        matched_stores.append(channel_name)
-                else:
-                    for store in store_list:
-                        if store in content_lower or store.replace("-", " ") in content_lower:
-                            matched_stores.append(store)
+                # Check full store names
+                for store in store_list:
+                    if store in content_lower or store.replace("-", " ") in content_lower:
+                        matched_stores.append(store)
+                # Check abbreviations
+                for abbr, store_channel in STORE_ABBREVIATIONS.items():
+                    word_boundary = f" {abbr} " or f"{abbr} " or f" {abbr}"
+                    if abbr in content_lower.split() and store_channel not in matched_stores:
+                        matched_stores.append(store_channel)
+
+                if not matched_stores and channel_name in store_list:
+                    matched_stores.append(channel_name)
 
                 if not matched_stores:
                     continue
