@@ -6,6 +6,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 import aiosqlite
 import asyncio
 import aiohttp
