@@ -74,6 +74,10 @@ async def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS location_aliases (
+                alias TEXT PRIMARY KEY,
+                store TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS restocks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 store TEXT NOT NULL,
@@ -671,7 +675,14 @@ async def helpme_cmd(ctx):
                 "`!stats @user` — Detailed stats for a user\n"
                 "`!allstats` — Server-wide activity overview\n"
                 "`!predict <store>` — Predict next restock based on patterns\n"
-                "`!restockhistory <store>` — View recent restock dates\n"
+                "`!predict <store> <location>` — Predict for specific location (e.g. `!predict target alliance`)\n"
+                "`!rh <store>` — View recent restock dates (alias for !restockhistory)\n"
+                "`!rh <store> <location>` — Filter by location (e.g. `!rh walmart beach`)\n"
+                "`!addlocation <word> <store>` — Add a location alias (e.g. `!addlocation alliance target`)\n"
+                "`!removelocation <word>` — Remove a location alias\n"
+                "`!listlocations` — Show all location aliases\n"
+                "`!deepbackfill` — Scan channels for past pings (last 7 days)\n"
+                "`!deepbackfill 14` — Scan last 14 days\n"
                 "`!backfill` — Backfill message content for old pings\n"
                 "`!settings` — View bot settings\n"
                 "`!set <key> <value>` — Change a setting\n"
@@ -1386,11 +1397,27 @@ async def predict_cmd(ctx, *args):
             if len(rows) < 3:
                 embed = discord.Embed(
                     title=f"Predict — {s.title()}",
-                    description=f"Not enough data yet ({len(rows)} pings). Need at least 3.",
-                    color=discord.Color.orange()
+                    color=discord.Color.blue()
                 )
-                await ctx.send(embed=embed)
-                continue
+                if len(rows) == 0:
+                    embed.description = "No pings found."
+                    await ctx.send(embed=embed)
+                    continue
+                embed.description = f"Only {len(rows)} ping(s) — need more data for full predictions."
+
+            # Show last 3 pings as examples
+            last_3 = rows[-3:] if len(rows) >= 3 else rows
+            example_lines = []
+            for (ts, content, ping_store) in last_3:
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    time_str = dt.strftime("%b %d %I:%M %p")
+                    snippet = content[:80] + "..." if content and len(content) > 80 else (content or "no content")
+                    example_lines.append(f"• {time_str} — {snippet}")
+                except (ValueError, TypeError):
+                    pass
+            if example_lines:
+                embed.add_field(name="📝 Recent Pings", value="\n".join(example_lines), inline=False)
 
             location_data = defaultdict(lambda: {"dates": set(), "day_counts": defaultdict(int), "hour_counts": defaultdict(int), "gaps": [], "pings": 0})
 
@@ -1535,6 +1562,12 @@ async def restockhistory_cmd(ctx, *args):
     Usage: !restockhistory target alliance (specific location)
     Usage: !restockhistory target 60 (last 60 days)"""
     store_list = CONFIG.get("store_channels", [])
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT alias, store FROM location_aliases")
+        for alias, store_name in await cursor.fetchall():
+            LOCATION_ALIASES[alias] = store_name
+
     days = 30
     store = None
     location = None
@@ -1633,11 +1666,78 @@ async def restockhistory_cmd(ctx, *args):
                 history_text = f"*Showing last 15 of {len(sorted_dates)} dates*\n\n" + history_text
 
             embed.description = history_text
-            embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_data)} days")
+            if location_not_found and location:
+                embed.set_footer(text=f"No pings found mentioning '{location}'. To track this location, ask an admin to add it to LOCATION_ALIASES in bot.py")
+            else:
+                embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_data)} days")
             await ctx.send(embed=embed)
 
     if not found_any:
         await ctx.send(f"No pings found in the last {days} days.")
+
+
+@bot.command(name="addlocation")
+@commands.has_role(ADMIN_ROLE_ID)
+async def addlocation_cmd(ctx, location_word: str = None, store: str = None):
+    """Add a location alias so vague mentions get tracked.
+    Usage: !addlocation alliance target
+    Usage: !addlocation beach walmart"""
+    if not location_word or not store:
+        await ctx.send("Usage: `!addlocation <location_word> <store_channel>`\nExample: `!addlocation alliance target`")
+        return
+
+    store_list = CONFIG.get("store_channels", [])
+    if store.lower() not in store_list:
+        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO location_aliases (alias, store) VALUES (?, ?)",
+            (location_word.lower(), store.lower())
+        )
+        await db.commit()
+
+    LOCATION_ALIASES[location_word.lower()] = store.lower()
+    await ctx.send(f"✅ Added **{location_word}** → **{store}**. Now when someone mentions '{location_word}' in a store/hunting channel, it'll be tracked as a {store} ping.")
+
+
+@bot.command(name="removelocation")
+@commands.has_role(ADMIN_ROLE_ID)
+async def removelocation_cmd(ctx, location_word: str = None):
+    """Remove a location alias.
+    Usage: !removelocation alliance"""
+    if not location_word:
+        await ctx.send("Usage: `!removelocation <location_word>`")
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM location_aliases WHERE alias = ?", (location_word.lower(),))
+        await db.commit()
+
+    LOCATION_ALIASES.pop(location_word.lower(), None)
+    await ctx.send(f"✅ Removed **{location_word}** alias.")
+
+
+@bot.command(name="listlocations")
+@commands.has_role(ADMIN_ROLE_ID)
+async def listlocations_cmd(ctx):
+    """Show all location aliases."""
+    all_aliases = dict(LOCATION_ALIASES)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT alias, store FROM location_aliases")
+        db_aliases = await cursor.fetchall()
+        for alias, store in db_aliases:
+            all_aliases[alias] = store
+
+    if not all_aliases:
+        await ctx.send("No location aliases configured.")
+        return
+
+    lines = [f"**{loc}** → {store}" for loc, store in sorted(all_aliases.items())]
+    embed = discord.Embed(title="Location Aliases", description="\n".join(lines), color=discord.Color.blue())
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="backfill")
@@ -1766,6 +1866,13 @@ async def deepbackfill_cmd(ctx, days: int = 7):
     scan_in_progress = True
 
     store_list = CONFIG.get("store_channels", [])
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT alias, store FROM location_aliases")
+        db_aliases = await cursor.fetchall()
+        for alias, store in db_aliases:
+            LOCATION_ALIASES[alias] = store
+
     scan_channels = [s for s in store_list]  # walmart, target, etc.
     scan_channels.extend(["ft-worth-area-hunts", "dallas-area-hunts", "open-hunting", "training-hunting", "general-chat"])
 
