@@ -54,8 +54,7 @@ async def init_db():
                 mention_type TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 message_content TEXT,
-                location TEXT,
-                source TEXT DEFAULT 'realtime'
+                location TEXT
             );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,10 +87,6 @@ async def init_db():
         # Migration: add location column to existing pings tables
         try:
             await db.execute("ALTER TABLE pings ADD COLUMN location TEXT")
-        except Exception:
-            pass  # Column already exists
-        try:
-            await db.execute("ALTER TABLE pings ADD COLUMN source TEXT DEFAULT 'realtime'")
         except Exception:
             pass  # Column already exists
         await db.commit()
@@ -143,32 +138,20 @@ def get_announcement_channel(guild):
 async def count_in_window(table, user_id, window_days):
     cutoff = days_ago_iso(window_days)
     async with aiosqlite.connect(DB_PATH) as db:
-        if table == "pings":
-            cursor = await db.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ? AND source = 'realtime'",
-                (user_id, cutoff)
-            )
-        else:
-            cursor = await db.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?",
-                (user_id, cutoff)
-            )
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?",
+            (user_id, cutoff)
+        )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 
 async def count_total(table, user_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        if table == "pings":
-            cursor = await db.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND source = 'realtime'",
-                (user_id,)
-            )
-        else:
-            cursor = await db.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE user_id = ?",
-                (user_id,)
-            )
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE user_id = ?",
+            (user_id,)
+        )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
@@ -675,7 +658,7 @@ async def pingleaderboard_cmd(ctx):
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE source = 'realtime' GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
+            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
             (limit,)
         )
         rows = await cursor.fetchall()
@@ -994,12 +977,12 @@ async def allstats_cmd(ctx):
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE source = 'realtime' GROUP BY user_id ORDER BY cnt DESC"
+            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC"
         )
         all_pingers = await cursor.fetchall()
 
         cursor = await db.execute(
-            f"SELECT user_id, COUNT(*) as cnt FROM pings WHERE source = 'realtime' AND timestamp >= ? GROUP BY user_id",
+            f"SELECT user_id, COUNT(*) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
             (days_ago_iso(window),)
         )
         recent_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
@@ -2095,8 +2078,8 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
                 for store in matched_stores:
                     await db.execute(
-                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc, 'backfill')
+                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc)
                     )
                     added += 1
 
