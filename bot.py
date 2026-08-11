@@ -205,6 +205,16 @@ STORE_ABBREVIATIONS = {
     "km": "kroger",
 }
 
+# Location aliases — vague location words that map to a specific store
+LOCATION_ALIASES = {
+    "alliance": "target",
+    "glade": "target",
+    "custer": "target",
+    "watauga": "target",
+    "beach": "walmart",
+    "carroll": "target",
+}
+
 
 def extract_store_from_text(message):
     store_mentions = []
@@ -1778,6 +1788,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
             added = 0
             skipped = 0
             seen_messages = set()
+            is_store_or_hunting = channel_name in store_list or channel_name in ["ft-worth-area-hunts", "dallas-area-hunts", "open-hunting", "training-hunting"]
             async for message in channel.history(limit=2000, after=cutoff):
                 if message.author.bot:
                     continue
@@ -1785,23 +1796,38 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 content_lower = message.content.lower()
                 has_ping = "@location" in content_lower or "@oos" in content_lower
 
-                if not has_ping:
-                    continue
-
                 msg_key = f"{message.author.id}:{message.channel.id}:{message.content[:200]}"
                 if msg_key in seen_messages:
                     continue
                 seen_messages.add(msg_key)
 
                 matched_stores = []
-                for store in store_list:
-                    if store in content_lower or store.replace("-", " ") in content_lower:
-                        matched_stores.append(store)
-                for abbr, store_channel in STORE_ABBREVIATIONS.items():
-                    if abbr in content_lower.split() and store_channel not in matched_stores:
-                        matched_stores.append(store_channel)
 
-                if not matched_stores and channel_name in store_list:
+                if has_ping:
+                    for store in store_list:
+                        if store in content_lower or store.replace("-", " ") in content_lower:
+                            matched_stores.append(store)
+                    for abbr, store_channel in STORE_ABBREVIATIONS.items():
+                        if abbr in content_lower.split() and store_channel not in matched_stores:
+                            matched_stores.append(store_channel)
+                    if not matched_stores and channel_name in store_list:
+                        matched_stores.append(channel_name)
+
+                if not matched_stores and is_store_or_hunting:
+                    words = content_lower.split()
+                    for loc_word, store_channel in LOCATION_ALIASES.items():
+                        if loc_word in words and store_channel in store_list:
+                            matched_stores.append(store_channel)
+                            break
+                    if not matched_stores:
+                        for store in store_list:
+                            if store in content_lower or store.replace("-", " ") in content_lower:
+                                matched_stores.append(store)
+
+                if not matched_stores:
+                    continue
+
+                mention_type = "location" if has_ping else "location"
                     matched_stores.append(channel_name)
 
                 if not matched_stores:
