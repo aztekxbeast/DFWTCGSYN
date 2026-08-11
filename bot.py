@@ -210,14 +210,13 @@ STORE_ABBREVIATIONS = {
 }
 
 # Location aliases — vague location words that map to a specific store
-LOCATION_ALIASES = {
-    "alliance": "target",
-    "glade": "target",
-    "custer": "target",
-    "watauga": "target",
-    "beach": "walmart",
-    "carroll": "target",
-}
+LOCATION_WORDS = [
+    "alliance", "glade", "custer", "watauga", "beach", "carroll",
+    "lakewood", "richardson", "plano", "mesa", "hulen", "west7th",
+    "sunset", "highland", "park", "lake", "north", "south", "east", "west",
+    "keller", "grapevine", "flower", "mound", "hurst", "bedford", "euless",
+    "arlington", "mansfield", "cedar", "hill", "duncan", "denton",
+]
 
 
 def extract_store_from_text(message):
@@ -1562,12 +1561,6 @@ async def restockhistory_cmd(ctx, *args):
     Usage: !restockhistory target alliance (specific location)
     Usage: !restockhistory target 60 (last 60 days)"""
     store_list = CONFIG.get("store_channels", [])
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT alias, store FROM location_aliases")
-        for alias, store_name in await cursor.fetchall():
-            LOCATION_ALIASES[alias] = store_name
-
     days = 30
     store = None
     location = None
@@ -1667,7 +1660,7 @@ async def restockhistory_cmd(ctx, *args):
 
             embed.description = history_text
             if location_not_found and location:
-                embed.set_footer(text=f"No pings found mentioning '{location}'. To track this location, ask an admin to add it to LOCATION_ALIASES in bot.py")
+                embed.set_footer(text=f"No pings found mentioning '{location}'. Try `!rh {s}` to see all {s} pings.")
             else:
                 embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_data)} days")
             await ctx.send(embed=embed)
@@ -1678,65 +1671,48 @@ async def restockhistory_cmd(ctx, *args):
 
 @bot.command(name="addlocation")
 @commands.has_role(ADMIN_ROLE_ID)
-async def addlocation_cmd(ctx, location_word: str = None, store: str = None):
-    """Add a location alias so vague mentions get tracked.
-    Usage: !addlocation alliance target
-    Usage: !addlocation beach walmart"""
-    if not location_word or not store:
-        await ctx.send("Usage: `!addlocation <location_word> <store_channel>`\nExample: `!addlocation alliance target`")
+async def addlocation_cmd(ctx, location_word: str = None):
+    """Add a location word so vague mentions get tracked.
+    Usage: !addlocation alliance
+    When someone says 'alliance' in a store channel, it'll be tracked as that store."""
+    if not location_word:
+        await ctx.send("Usage: `!addlocation <location_word>`\nExample: `!addlocation alliance`")
         return
 
-    store_list = CONFIG.get("store_channels", [])
-    if store.lower() not in store_list:
-        await ctx.send(f"❌ Unknown store. Valid stores: {', '.join(store_list)}")
-        return
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO location_aliases (alias, store) VALUES (?, ?)",
-            (location_word.lower(), store.lower())
-        )
-        await db.commit()
-
-    LOCATION_ALIASES[location_word.lower()] = store.lower()
-    await ctx.send(f"✅ Added **{location_word}** → **{store}**. Now when someone mentions '{location_word}' in a store/hunting channel, it'll be tracked as a {store} ping.")
+    if location_word.lower() not in LOCATION_WORDS:
+        LOCATION_WORDS.append(location_word.lower())
+        await ctx.send(f"✅ Added **{location_word}** as a location word. When mentioned in a store/hunting channel, it'll be tracked as a ping for that store.")
+    else:
+        await ctx.send(f"**{location_word}** is already a tracked location word.")
 
 
 @bot.command(name="removelocation")
 @commands.has_role(ADMIN_ROLE_ID)
 async def removelocation_cmd(ctx, location_word: str = None):
-    """Remove a location alias.
+    """Remove a location word.
     Usage: !removelocation alliance"""
     if not location_word:
         await ctx.send("Usage: `!removelocation <location_word>`")
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("DELETE FROM location_aliases WHERE alias = ?", (location_word.lower(),))
-        await db.commit()
-
-    LOCATION_ALIASES.pop(location_word.lower(), None)
-    await ctx.send(f"✅ Removed **{location_word}** alias.")
+    if location_word.lower() in LOCATION_WORDS:
+        LOCATION_WORDS.remove(location_word.lower())
+        await ctx.send(f"✅ Removed **{location_word}** from tracked location words.")
+    else:
+        await ctx.send(f"**{location_word}** is not a tracked location word.")
 
 
 @bot.command(name="listlocations")
 @commands.has_role(ADMIN_ROLE_ID)
 async def listlocations_cmd(ctx):
-    """Show all location aliases."""
-    all_aliases = dict(LOCATION_ALIASES)
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT alias, store FROM location_aliases")
-        db_aliases = await cursor.fetchall()
-        for alias, store in db_aliases:
-            all_aliases[alias] = store
-
-    if not all_aliases:
-        await ctx.send("No location aliases configured.")
+    """Show all tracked location words."""
+    if not LOCATION_WORDS:
+        await ctx.send("No location words configured.")
         return
 
-    lines = [f"**{loc}** → {store}" for loc, store in sorted(all_aliases.items())]
-    embed = discord.Embed(title="Location Aliases", description="\n".join(lines), color=discord.Color.blue())
+    lines = [f"• {loc}" for loc in sorted(LOCATION_WORDS)]
+    embed = discord.Embed(title="Tracked Location Words", description="\n".join(lines), color=discord.Color.blue())
+    embed.set_footer(text="When these appear in store/hunting channels, they're tracked as pings for that channel's store.")
     await ctx.send(embed=embed)
 
 
@@ -1866,13 +1842,6 @@ async def deepbackfill_cmd(ctx, days: int = 7):
     scan_in_progress = True
 
     store_list = CONFIG.get("store_channels", [])
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT alias, store FROM location_aliases")
-        db_aliases = await cursor.fetchall()
-        for alias, store in db_aliases:
-            LOCATION_ALIASES[alias] = store
-
     scan_channels = [s for s in store_list]  # walmart, target, etc.
     scan_channels.extend(["ft-worth-area-hunts", "dallas-area-hunts", "open-hunting", "training-hunting", "general-chat"])
 
@@ -1922,9 +1891,10 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
                 if not matched_stores and is_store_or_hunting:
                     words = content_lower.split()
-                    for loc_word, store_channel in LOCATION_ALIASES.items():
-                        if loc_word in words and store_channel in store_list:
-                            matched_stores.append(store_channel)
+                    for loc_word in LOCATION_WORDS:
+                        if loc_word in words:
+                            if channel_name in store_list:
+                                matched_stores.append(channel_name)
                             break
                     if not matched_stores:
                         for store in store_list:
@@ -1948,12 +1918,13 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 msg_time = message.created_at
                 skip = False
                 for (eid,) in existing:
-                    cursor2 = await db.execute("SELECT timestamp FROM pings WHERE id = ?", (eid,))
+                    cursor2 = await db.execute("SELECT timestamp, message_content FROM pings WHERE id = ?", (eid,))
                     row = await cursor2.fetchone()
                     if row:
                         try:
                             existing_dt = datetime.fromisoformat(row[0].replace("Z", "+00:00")).replace(tzinfo=None)
-                            if abs((msg_time - existing_dt).total_seconds()) < 60:
+                            existing_content = (row[1] or "")[:200]
+                            if abs((msg_time - existing_dt).total_seconds()) < 60 and existing_content == message.content[:200]:
                                 skip = True
                                 break
                         except (ValueError, TypeError):
