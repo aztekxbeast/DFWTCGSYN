@@ -1470,7 +1470,7 @@ async def restockhistory_cmd(ctx, store: str = None, days: int = 30):
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             cursor = await db.execute(
-                "SELECT timestamp, message_content, user_id FROM pings WHERE store = ? AND timestamp >= ? AND channel_id != ? AND (LOWER(message_content) LIKE '%location%' OR LOWER(message_content) LIKE '%oos%' OR message_content IS NULL) ORDER BY timestamp ASC",
+                "SELECT timestamp, message_content, user_id FROM pings WHERE store = ? AND timestamp >= ? AND channel_id != ? AND message_content IS NOT NULL AND (LOWER(message_content) LIKE '%location%' OR LOWER(message_content) LIKE '%oos%') ORDER BY timestamp ASC",
                 (s, cutoff, ANNOUNCEMENTS_CHANNEL_ID)
             )
             rows = await cursor.fetchall()
