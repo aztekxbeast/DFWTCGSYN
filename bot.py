@@ -34,8 +34,7 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-scan_in_progress = False
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 
 # ─── Database ────────────────────────────────────────────────────────────────
@@ -111,6 +110,13 @@ def is_admin_or_mod(member):
     return any(r.id in (ADMIN_ROLE_ID, MOD_ROLE_ID) for r in member.roles)
 
 
+def get_announcement_channel(guild):
+    for ch in guild.text_channels:
+        if ch.name == "poke-hunter-access":
+            return ch
+    return guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
+
+
 async def count_in_window(table, user_id, window_days):
     cutoff = days_ago_iso(window_days)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -162,25 +168,42 @@ def extract_store_from_text(message):
     store_mentions = []
     content_lower = message.content.lower()
     store_list = CONFIG.get("store_channels", [])
-    role_names = [r.name.lower() for r in message.role_mentions]
 
+    # Check actual role mentions
+    role_names = [r.name.lower() for r in message.role_mentions]
     has_location_ping = "location" in role_names
     has_oos_ping = "oos" in role_names
+
+    # Also check for text-based mentions (when user can't actually ping the role)
+    if not has_location_ping and "@location" in content_lower:
+        has_location_ping = True
+    if not has_oos_ping and "@oos" in content_lower:
+        has_oos_ping = True
 
     if not has_location_ping and not has_oos_ping:
         return store_mentions
 
+    ping_type = "location" if has_location_ping else "oos"
+
     for store in store_list:
         if store in content_lower or store.replace("-", " ") in content_lower:
             store_mentions.append({
-                "role_type": "location" if has_location_ping else "oos",
+                "role_type": ping_type,
                 "channel": message.channel.name,
                 "store": store
             })
 
     if not store_mentions and message.channel.name in store_list:
         store_mentions.append({
-            "role_type": "location" if has_location_ping else "oos",
+            "role_type": ping_type,
+            "channel": message.channel.name,
+            "store": message.channel.name
+        })
+
+    # If no store match but we detected a ping, log it with channel name
+    if not store_mentions:
+        store_mentions.append({
+            "role_type": ping_type,
             "channel": message.channel.name,
             "store": message.channel.name
         })
@@ -217,7 +240,8 @@ async def log_chat(user_id, channel_id):
 
 # ─── Access Engine ───────────────────────────────────────────────────────────
 
-async def check_access(user_id, guild):
+async def check_grant_access(user_id, guild):
+    """Only GRANT access when ping threshold is reached. Never revoke on message."""
     member = guild.get_member(user_id)
     if not member:
         return
@@ -227,7 +251,34 @@ async def check_access(user_id, guild):
         return
 
     if hunter_role in member.roles:
-        whitelist_cutoff = days_ago_iso(9999)
+        return
+
+    total_pings = await count_total("pings", user_id)
+    required = int(await get_setting("pings_to_gain"))
+    if total_pings >= required:
+        await member.add_roles(hunter_role, reason="Reached ping threshold")
+        channel = get_announcement_channel(guild)
+        if channel:
+            try:
+                await channel.send(
+                    f"🎉 {member.mention} has earned the **Pokemon Hunter** role! "
+                    f"You now have access to all store channels."
+                )
+            except discord.Forbidden:
+                pass
+
+
+async def check_access(user_id, guild):
+    """Full check — used only by daily maintenance task."""
+    member = guild.get_member(user_id)
+    if not member:
+        return
+
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        return
+
+    if hunter_role in member.roles:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "SELECT user_id FROM whitelist WHERE user_id = ?", (user_id,)
@@ -248,12 +299,12 @@ async def check_access(user_id, guild):
             return
 
         await member.remove_roles(hunter_role, reason="Failed activity maintenance")
-        channel = guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
+        channel = get_announcement_channel(guild)
         if channel:
             try:
                 await channel.send(
                     f"⚠️ {member.mention} has lost the **Pokemon Hunter** role due to inactivity. "
-                    f"You need to keep posting pings, sharing hits in #pulls, or chatting to maintain access."
+                    f"You need to keep posting pings to maintain access."
                 )
             except discord.Forbidden:
                 pass
@@ -262,7 +313,7 @@ async def check_access(user_id, guild):
         required = int(await get_setting("pings_to_gain"))
         if total_pings >= required:
             await member.add_roles(hunter_role, reason="Reached ping threshold")
-            channel = guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
+            channel = get_announcement_channel(guild)
             if channel:
                 try:
                     await channel.send(
@@ -296,7 +347,7 @@ async def on_member_join(member):
         if silver_role and hunter_role and silver_role in member.roles:
             try:
                 await member.add_roles(hunter_role, reason="MEE6 Silver+ head start")
-                channel = member.guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
+                channel = get_announcement_channel(member.guild)
                 if channel:
                     await channel.send(
                         f"🌟 Welcome {member.mention}! You have the MEE6 Silver role, "
@@ -315,6 +366,30 @@ async def on_member_join(member):
 
 @bot.event
 async def on_message(message):
+    # Check for MEE6 achievement announcements (Gold/Diamond)
+    if message.author.bot and message.author.name == "MEE6":
+        content = message.content.lower()
+        if "(gold)" in content or "(diamond)" in content:
+            if message.mentions:
+                guild = message.guild
+                hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+                if hunter_role:
+                    for user in message.mentions:
+                        member = guild.get_member(user.id)
+                        if member and hunter_role not in member.roles:
+                            try:
+                                await member.add_roles(hunter_role, reason="MEE6 Gold/Diamond achievement")
+                                # Post to #poke-hunter-access
+                                for ch in guild.text_channels:
+                                    if ch.name == "poke-hunter-access":
+                                        await ch.send(
+                                            f"🏆 {member.mention} earned a MEE6 Gold/Diamond achievement and has been granted **Pokemon Hunter** access!"
+                                        )
+                                        break
+                            except discord.Forbidden:
+                                pass
+        return
+
     if message.author.bot:
         return
     if not message.guild:
@@ -325,27 +400,23 @@ async def on_message(message):
     channel_id = message.channel.id
     user_id = message.author.id
 
-    store_channels = CONFIG.get("store_channels", [])
+    # Track pings in ALL channels
+    store_mentions = extract_store_from_text(message)
+    if store_mentions:
+        for mention in store_mentions:
+            await log_ping(user_id, channel_id, mention["store"], mention["role_type"])
+        await check_grant_access(user_id, message.guild)
+
+    # Track media (attachments) only in media channels
     media_channels = CONFIG.get("media_channels", [])
-    chat_channels = CONFIG.get("chat_channels", [])
-
-    channel_name = message.channel.name
-
-    if channel_name in store_channels or channel_name in media_channels or channel_name in chat_channels:
-        store_mentions = extract_store_from_text(message)
-        if store_mentions:
-            for mention in store_mentions:
-                await log_ping(user_id, channel_id, mention["store"], mention["role_type"])
-            await check_access(user_id, message.guild)
-
-    if channel_name in media_channels:
+    if message.channel.name in media_channels:
         if message.attachments:
             for _ in message.attachments:
                 await log_media(user_id, channel_id)
-            await check_access(user_id, message.guild)
+            await check_grant_access(user_id, message.guild)
 
-    if channel_name in chat_channels:
-        await log_chat(user_id, channel_id)
+    # Track chat messages in ALL channels
+    await log_chat(user_id, channel_id)
 
 
 # ─── Maintenance Task ────────────────────────────────────────────────────────
@@ -425,7 +496,7 @@ async def pingleaderboard_cmd(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="mylevel")
+@bot.command(name="mylevel", aliases=["mystatus", "status", "me"])
 async def mylevel_cmd(ctx):
     user = ctx.author
     total = await count_total("pings", user.id)
@@ -448,13 +519,86 @@ async def mylevel_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+# ─── Help Command ───────────────────────────────────────────────────────────
+
+@bot.command(name="helpme")
+async def helpme_cmd(ctx):
+    embed = discord.Embed(
+        title="PokeHunt Bot — Commands",
+        description="Track your activity and earn the **Pokemon Hunter** role!",
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(
+        name="📊 Your Stats",
+        value=(
+            "`!pings` — Your ping count (last 14 days)\n"
+            "`!pings @user` — Check someone else's pings\n"
+            "`!pingtotal` — Your total lifetime pings\n"
+            "`!pingtotal @user` — Someone else's total pings\n"
+            "`!pingleaderboard` — Top ping contributors\n"
+            "`!mylevel` — Full activity breakdown\n"
+            "`!helpme` — Show this message"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎯 How to Earn Pokemon Hunter",
+        value=(
+            "• Post **10 pings** (mention `@location` or `@OOS` in any channel)\n"
+            "• Once you hit 10, you unlock the role automatically\n"
+            "• Use `!pings` to check your progress"
+        ),
+        inline=False
+    )
+
+    if is_admin_or_mod(ctx.author):
+        embed.add_field(
+            name="🛡️ Admin Commands",
+            value=(
+                "`!whitelist add @user` — Grant permanent Hunter access\n"
+                "`!whitelist add 123456789` — Grant access by user ID (works from any channel)\n"
+                "`!whitelist remove @user` — Remove from whitelist\n"
+                "`!resetpings @user` — Clear a user's ping history\n"
+                "`!resetallpings` — Clear ALL ping history\n"
+                "`!settings` — View bot settings\n"
+                "`!set <key> <value>` — Change a setting\n"
+                "`!sync` — Run manual access check\n"
+                "`!mee6sync` — Sync MEE6 Silver+ roles"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(text="PokeHunt Bot • DFW TCG Syndicate")
+    await ctx.send(embed=embed)
+
+
 # ─── Admin Commands ──────────────────────────────────────────────────────────
 
 @bot.command(name="whitelist")
 @commands.has_role(ADMIN_ROLE_ID)
-async def whitelist_cmd(ctx, action: str = None, member: discord.Member = None):
-    if action not in ("add", "remove") or not member:
-        await ctx.send("Usage: `!whitelist add/remove @user`")
+async def whitelist_cmd(ctx, action: str = None, target: str = None):
+    if action not in ("add", "remove") or not target:
+        await ctx.send("Usage: `!whitelist add/remove @user` or `!whitelist add/remove userid`")
+        return
+
+    # Try to get member from mention first, then by ID
+    member = None
+    if ctx.message.mentions:
+        member = ctx.message.mentions[0]
+    else:
+        try:
+            user_id = int(target)
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                member = await ctx.guild.fetch_member(user_id)
+        except (ValueError, discord.NotFound):
+            await ctx.send("❌ Could not find that user. Use `@mention` or their user ID.")
+            return
+
+    if not member:
+        await ctx.send("❌ Could not find that user in this server.")
         return
 
     async with aiosqlite.connect(DB_PATH) as db:

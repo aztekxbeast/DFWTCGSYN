@@ -1,14 +1,14 @@
-app = "pokehunt-bot-drifting-sky-3389"
-primary_region = "iad"
+app = 'pokehunt-bot-drifting-sky-3389'
+primary_region = 'iad'
 
 [build]
 
 [env]
-  PYTHON_VERSION = "3.14"
+  PYTHON_VERSION = '3.14'
 
-[mounts]
-  source = "pokehunt_data"
-  destination = "/app/data"
+[[mounts]]
+  source = 'pokehunt_data'
+  destination = '/app/data'
 
 [http_service]
   internal_port = 8080
@@ -16,9 +16,9 @@ primary_region = "iad"
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
-  processes = ["app"]
+  processes = ['app']
 
 [[vm]]
-  memory = "256mb"
-  cpu_kind = "shared"
+  memory = '256mb'
+  cpu_kind = 'shared'
   cpus = 1
