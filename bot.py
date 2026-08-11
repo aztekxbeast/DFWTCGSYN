@@ -1407,7 +1407,7 @@ async def predict_cmd(ctx, *args):
     if digit_args:
         days = int(digit_args[0])
     if non_digit_args:
-        store = non_digit_args[0].lower()
+        store = non_digit_args[0].lower().lstrip("@").strip("<&>")
         if len(non_digit_args) > 1:
             location = " ".join(non_digit_args[1:]).lower()
 
@@ -1583,7 +1583,7 @@ async def restockhistory_cmd(ctx, *args):
     if digit_args:
         days = int(digit_args[0])
     if non_digit_args:
-        store = non_digit_args[0].lower()
+        store = non_digit_args[0].lower().lstrip("@").strip("<&>")
         if len(non_digit_args) > 1:
             location = " ".join(non_digit_args[1:]).lower()
 
