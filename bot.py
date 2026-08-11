@@ -1828,10 +1828,6 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                     continue
 
                 mention_type = "location" if has_ping else "location"
-                    matched_stores.append(channel_name)
-
-                if not matched_stores:
-                    continue
 
                 cursor = await db.execute(
                     "SELECT id FROM pings WHERE user_id = ? AND channel_id = ? AND timestamp >= ?",
