@@ -1642,6 +1642,111 @@ async def backfill_cmd(ctx):
     scan_in_progress = False
 
 
+@bot.command(name="deepbackfill")
+@commands.has_role(ADMIN_ROLE_ID)
+async def deepbackfill_cmd(ctx, days: int = 7):
+    """Scan store channels for past messages and create ping records.
+    Usage: !deepbackfill (7 days default)
+    Usage: !deepbackfill 14 (last 14 days)"""
+    global scan_in_progress
+    if scan_in_progress:
+        await ctx.send("❌ A scan is already running. Wait for it to finish.")
+        return
+    scan_in_progress = True
+
+    store_list = CONFIG.get("store_channels", [])
+    scan_channels = [s for s in store_list]  # walmart, target, etc.
+    scan_channels.extend(["ft-worth-area-hunts", "dallas-area-hunts"])
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    total_added = 0
+    total_skipped = 0
+    progress_msg = await ctx.send(f"📡 Deep backfilling last {days} days across {len(scan_channels)} channels...")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        for channel_name in scan_channels:
+            channel = discord.utils.get(ctx.guild.text_channels, name=channel_name)
+            if not channel:
+                continue
+            try:
+                if not channel.permissions_for(ctx.guild.me).read_message_history:
+                    continue
+            except discord.Forbidden:
+                continue
+
+            added = 0
+            skipped = 0
+            async for message in channel.history(limit=2000, after=cutoff):
+                if message.author.bot:
+                    continue
+
+                content_lower = message.content.lower()
+                has_ping = "@location" in content_lower or "@oos" in content_lower
+
+                matched_stores = []
+                if has_ping:
+                    for store in store_list:
+                        if store in content_lower or store.replace("-", " ") in content_lower:
+                            matched_stores.append(store)
+                    if not matched_stores and channel_name in store_list:
+                        matched_stores.append(channel_name)
+                else:
+                    for store in store_list:
+                        if store in content_lower or store.replace("-", " ") in content_lower:
+                            matched_stores.append(store)
+
+                if not matched_stores:
+                    continue
+
+                cursor = await db.execute(
+                    "SELECT id FROM pings WHERE user_id = ? AND channel_id = ? AND timestamp >= ?",
+                    (message.author.id, message.channel.id, cutoff.isoformat())
+                )
+                existing = await cursor.fetchall()
+                existing_times = set()
+                for (eid,) in existing:
+                    pass
+
+                msg_time = message.created_at
+                skip = False
+                for (eid,) in existing:
+                    cursor2 = await db.execute("SELECT timestamp FROM pings WHERE id = ?", (eid,))
+                    row = await cursor2.fetchone()
+                    if row:
+                        try:
+                            existing_dt = datetime.fromisoformat(row[0].replace("Z", "+00:00")).replace(tzinfo=None)
+                            if abs((msg_time - existing_dt).total_seconds()) < 60:
+                                skip = True
+                                break
+                        except (ValueError, TypeError):
+                            pass
+
+                if skip:
+                    skipped += 1
+                    continue
+
+                mention_type = "location" if "@location" in content_lower or "location" in content_lower else "oos"
+                for store in matched_stores:
+                    await db.execute(
+                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content) VALUES (?, ?, ?, ?, ?, ?)",
+                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500])
+                    )
+                    added += 1
+
+            total_added += added
+            total_skipped += skipped
+            if added > 0:
+                try:
+                    await progress_msg.edit(content=f"📡 Scanned #{channel_name}: +{added} pings | Total: {total_added}")
+                except discord.Forbidden:
+                    pass
+
+        await db.commit()
+
+    await progress_msg.edit(content=f"✅ Deep backfill complete! Added **{total_added}** pings across {len(scan_channels)} channels ({total_skipped} skipped as duplicates).")
+    scan_in_progress = False
+
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingRole):
