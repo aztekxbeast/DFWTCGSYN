@@ -11,6 +11,7 @@
   "training_channel": "open-hunting",
   "mee6_level_threshold": 10,
   "messages_to_gain": 50,
+  "mee6_silver_role_name": "Silver",
   "pokemon_trainer_role_name": "Pokemon Trainer",
   "pokemon_hunter_role_name": "Pokemon Hunter",
   "admin_role_name": "Admin",

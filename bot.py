@@ -35,6 +35,7 @@ intents.members = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+scan_in_progress = False
 
 
 # ─── Database ────────────────────────────────────────────────────────────────
@@ -475,6 +476,8 @@ async def pingtotal_cmd(ctx, member: discord.Member = None):
 @bot.command(name="pingleaderboard")
 async def pingleaderboard_cmd(ctx):
     limit = int(await get_setting("ping_leaderboard_size"))
+    required = int(await get_setting("pings_to_gain"))
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
@@ -486,12 +489,19 @@ async def pingleaderboard_cmd(ctx):
         await ctx.send("No pings recorded yet.")
         return
 
-    embed = discord.Embed(title="Ping Leaderboard", color=discord.Color.gold())
+    embed = discord.Embed(
+        title="Ping Leaderboard",
+        description=f"**{required}** pings needed for **Pokemon Hunter** role",
+        color=discord.Color.gold()
+    )
     description = ""
     medals = ["🥇", "🥈", "🥉"]
     for i, (user_id, count) in enumerate(rows):
         prefix = medals[i] if i < 3 else f"**{i+1}.**"
-        description += f"{prefix} <@{user_id}> — {count} pings\n"
+        member = ctx.guild.get_member(user_id)
+        has_hunter = hunter_role in member.roles if member and hunter_role else False
+        status = "✅" if has_hunter else f"({count}/{required})"
+        description += f"{prefix} <@{user_id}> — {count} pings {status}\n"
     embed.description = description
     await ctx.send(embed=embed)
 
