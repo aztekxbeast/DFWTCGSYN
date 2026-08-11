@@ -54,7 +54,8 @@ async def init_db():
                 mention_type TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 message_content TEXT,
-                location TEXT
+                location TEXT,
+                source TEXT DEFAULT 'realtime'
             );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +88,10 @@ async def init_db():
         # Migration: add location column to existing pings tables
         try:
             await db.execute("ALTER TABLE pings ADD COLUMN location TEXT")
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE pings ADD COLUMN source TEXT DEFAULT 'realtime'")
         except Exception:
             pass  # Column already exists
         await db.commit()
@@ -138,20 +143,32 @@ def get_announcement_channel(guild):
 async def count_in_window(table, user_id, window_days):
     cutoff = days_ago_iso(window_days)
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?",
-            (user_id, cutoff)
-        )
+        if table == "pings":
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ? AND source = 'realtime'",
+                (user_id, cutoff)
+            )
+        else:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?",
+                (user_id, cutoff)
+            )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 
 async def count_total(table, user_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE user_id = ?",
-            (user_id,)
-        )
+        if table == "pings":
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND source = 'realtime'",
+                (user_id,)
+            )
+        else:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id = ?",
+                (user_id,)
+            )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
@@ -658,7 +675,7 @@ async def pingleaderboard_cmd(ctx):
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
+            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE source = 'realtime' GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
             (limit,)
         )
         rows = await cursor.fetchall()
@@ -977,12 +994,12 @@ async def allstats_cmd(ctx):
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC"
+            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE source = 'realtime' GROUP BY user_id ORDER BY cnt DESC"
         )
         all_pingers = await cursor.fetchall()
 
         cursor = await db.execute(
-            f"SELECT user_id, COUNT(*) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
+            f"SELECT user_id, COUNT(*) as cnt FROM pings WHERE source = 'realtime' AND timestamp >= ? GROUP BY user_id",
             (days_ago_iso(window),)
         )
         recent_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
@@ -1960,7 +1977,20 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
     store_list = CONFIG.get("store_channels", [])
     scan_channels = [s for s in store_list]  # walmart, target, etc.
-    scan_channels.extend(["ft-worth-area-hunts", "dallas-area-hunts", "open-hunting", "training-hunting", "general-chat"])
+
+    # Dynamically find all channels under Ft Worth Area Hunts and Dallas Area Hunts categories
+    location_categories = ["ft worth area hunts", "dallas area hunts"]
+    for cat_name in location_categories:
+        category = discord.utils.get(ctx.guild.categories, name__iexact=cat_name)
+        if category:
+            for ch in category.text_channels:
+                if ch.name not in scan_channels:
+                    scan_channels.append(ch.name)
+
+    # Always include these hunting/general channels
+    for ch_name in ["open-hunting", "training-hunting", "general-chat"]:
+        if ch_name not in scan_channels:
+            scan_channels.append(ch_name)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
     total_added = 0
@@ -1981,7 +2011,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
             added = 0
             skipped = 0
             seen_messages = set()
-            is_store_or_hunting = channel_name in store_list or channel_name in ["ft-worth-area-hunts", "dallas-area-hunts", "open-hunting", "training-hunting"]
+            is_store_or_hunting = channel_name in store_list or channel_name in ["open-hunting", "training-hunting"] or channel.category and channel.category.name.lower() in location_categories
             async for message in channel.history(limit=2000, after=cutoff):
                 if message.author.bot:
                     continue
@@ -2065,8 +2095,8 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
                 for store in matched_stores:
                     await db.execute(
-                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc)
+                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc, 'backfill')
                     )
                     added += 1
 
