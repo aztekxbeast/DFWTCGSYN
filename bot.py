@@ -1637,7 +1637,7 @@ async def restockhistory_cmd(ctx, *args):
 
             found_any = True
             daily_data = {}
-            for (ts, content, uid, ping_store) in rows:
+            for (ts, content, uid, ping_store, stored_loc) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
