@@ -346,11 +346,11 @@ def extract_store_from_text(message):
     return store_mentions
 
 
-async def log_ping(user_id, channel_id, store, mention_type, content=None):
+async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, channel_id, store, mention_type, now_iso(), content)
+            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, channel_id, store, mention_type, now_iso(), content, location)
         )
         await db.commit()
 
@@ -539,8 +539,26 @@ async def on_message(message):
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
         store_mentions = extract_store_from_text(message)
         if store_mentions:
+            # Extract location from message content
+            content_lower = message.content.lower()
+            loc = None
+            c = content_lower
+            c = re.sub(r'@(location|oos)\s*', '', c)
+            store_list = CONFIG.get("store_channels", [])
+            for store in store_list:
+                c = c.replace(store, ' ').replace(store.replace('-', ' '), ' ')
+            for abbr in STORE_ABBREVIATIONS:
+                c = c.replace(abbr, ' ')
+            stop_words = ['at', 'on', 'in', 'the', 'has', 'have', 'stock', 'restock', 'found', 'just', 'got', 'etb', 'etbs', 'blisters', 'pc', 'exclusive', 'tin', 'tins', 'box', 'boxes', 'packs', 'collection', 'nothing', 'yet', 'fresh', 'drop', 'hits', 'hit', 'securing', 'secured', 'available', 'left', 'only', 'none', 'empty', 'cleared', 'wiped', 'asking', 'price', 'sell', 'selling', 'trade', 'want', 'oos', 'location', 'pokémon', 'pokemon', 'is', 'stocking', 'stock']
+            for w in stop_words:
+                c = re.sub(r'\b' + w + r'\b', ' ', c)
+            c = re.sub(r'[^\w\s]', ' ', c).strip()
+            c = re.sub(r'\s+', ' ', c).strip()
+            words = c.split()[:3]
+            loc = ' '.join(words) if words else None
+
             for mention in store_mentions:
-                await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500])
+                await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500], loc)
             await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
@@ -1481,6 +1499,8 @@ async def predict_cmd(ctx, *args):
             for (ts, content, ping_store, stored_loc) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    from zoneinfo import ZoneInfo
+                    dt = dt.astimezone(ZoneInfo("America/Chicago"))
                 except (ValueError, TypeError):
                     continue
                 loc = stored_loc.title() if stored_loc else "General"
@@ -1673,10 +1693,13 @@ async def restockhistory_cmd(ctx, *args):
             for (ts, content, uid, ping_store, stored_loc) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    # Convert to Central Time (CST/CDT)
+                    from zoneinfo import ZoneInfo
+                    dt = dt.astimezone(ZoneInfo("America/Chicago"))
                 except (ValueError, TypeError):
                     continue
                 date_key = dt.strftime("%Y-%m-%d (%a)")
-                time_str = dt.strftime("%I:%M %p")
+                time_str = dt.strftime("%I:%M %p CT")
                 if date_key not in daily_data:
                     daily_data[date_key] = []
                 daily_data[date_key].append({
