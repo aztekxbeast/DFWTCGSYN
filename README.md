@@ -115,7 +115,7 @@ One of these must be true within the window:
 | `!mee6scan` | Scan messages for MEE6 level-up history |
 | `!messagescan` | Scan message history for access grants |
 
-### Restock Tracking Commands
+### Restock & Location Commands
 
 | Command | Description |
 |---------|-------------|
@@ -123,17 +123,13 @@ One of these must be true within the window:
 | `!predict <store> <location>` | Predict for specific location (e.g. `!predict target alliance`) |
 | `!rh <store>` | Recent restock dates (alias for `!restockhistory`) |
 | `!rh <store> <location>` | Filter by location (e.g. `!rh walmart beach`) |
-| `!deepbackfill` | Scan channels for past pings (7 days) |
-| `!deepbackfill 14` | Scan last 14 days |
-| `!backfill` | Backfill message content for old pings |
-
-### Location Management Commands
-
-| Command | Description |
-|---------|-------------|
 | `!addlocation <word>` | Add a location word (e.g. `!addlocation renaissance`) |
 | `!removelocation <word>` | Remove a location word |
 | `!listlocations` | Show all tracked location words |
+| `!fixlocations` | Re-extract location data for existing pings in DB |
+| `!deepbackfill` | Scan channels for past pings (7 days) |
+| `!deepbackfill 14` | Scan last 14 days |
+| `!backfill` | Backfill message content for old pings |
 
 ---
 
@@ -242,6 +238,7 @@ Everything stored in `data/pokehunt.db` (SQLite):
 - **whitelist** — `(user_id, added_by, timestamp)`
 - **settings** — `(key, value)` — mirrors config.json
 - **location_aliases** — `(alias, store, added_by, timestamp)`
+- **hunter_role_earned** — `(user_id, earned_at)` — tracks when user earned Hunter access
 
 ---
 
