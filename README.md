@@ -21,8 +21,9 @@ A single Python bot that tracks ping activity, media posts, and chat messages to
 ## Channel Tracking
 
 ### Store Channels (Ping Tracking)
-Ping tracking is active in these channels — when someone mentions `@location` / `@OOS` (or types it as text) with a store name, it counts as a ping:
+Ping tracking is active in all store channels — when someone mentions `@location` or `@OOS` (or types `@location` / `@OOS` as text) with a store name, it records a ping.
 
+#### 📁 Category: General Store Info
 | Channel | What Triggers a Ping |
 |---------|---------------------|
 | **#academy** | `@location academy` or `@oos academy` |
@@ -34,15 +35,19 @@ Ping tracking is active in these channels — when someone mentions `@location` 
 | **#gamestop** | `@location gamestop` or abbreviation `gs` |
 | **#kroger** | `@location kroger` or abbreviation `km` |
 | **#micro-center** | `@location micro center` or abbreviation `mc` |
-| **#mitsuwa** | `@location mitsuwa` |
-| **#others** | `@location` + any store name |
-| **#other-pokémon** | `@location` + any store name |
 | **#pokemon-center** | `@location pokemon center` or abbreviations `pc`, `pk` |
 | **#sam's-costco** | `@location sam's` or abbreviations `sam`, `sams`, `costco` |
 | **#scheels** | `@location scheels` |
 | **#target** | `@location target` |
 | **#walgreens-cvs** | `@location walgreens` or abbreviations `wc`, `wag` |
 | **#walmart** | `@location walmart` |
+
+#### 📁 Category: Others
+| Channel | What Triggers a Ping |
+|---------|---------------------|
+| **#mitsuwa** | `@location mitsuwa` |
+| **#other-pokémon** | `@location` + any store name |
+| **#others** | `@location` + any store name |
 
 ### Location Words
 Vague location mentions (e.g. "alliance", "glade", "watauga", "beach") in store channels are tracked as pings for that store. Use `!addlocation` to add more.
