@@ -626,8 +626,9 @@ async def on_message(message):
                 await log_media(user_id, channel_id)
             await check_grant_access(user_id, message.guild)
 
-    # Track chat messages in ALL channels
-    await log_chat(user_id, channel_id)
+    # Track chat messages in all channels except server-announcements and get-roles
+    if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
+        await log_chat(user_id, channel_id)
 
 
 # ─── Maintenance Task ────────────────────────────────────────────────────────
