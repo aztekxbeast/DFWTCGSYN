@@ -83,6 +83,10 @@ async def init_db():
                 added_by INTEGER NOT NULL,
                 timestamp TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS hunter_role_earned (
+                user_id INTEGER PRIMARY KEY,
+                earned_at TEXT NOT NULL
+            );
         """)
         # Migration: add location column to existing pings tables
         try:
@@ -118,6 +122,15 @@ async def set_setting(key, value):
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+async def record_hunter_role_earned(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO hunter_role_earned (user_id, earned_at) VALUES (?, ?)",
+            (user_id, now_iso())
+        )
+        await db.commit()
 
 
 def days_ago_iso(days):
@@ -432,6 +445,7 @@ async def check_grant_access(user_id, guild):
     required = int(await get_setting("pings_to_gain"))
     if total_pings >= required:
         await member.add_roles(hunter_role, reason="Reached ping threshold")
+        await record_hunter_role_earned(user_id)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -461,6 +475,18 @@ async def check_access(user_id, guild):
             if await cursor.fetchone():
                 return
 
+        # Don't revoke until user has had the role for the full maintenance window
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "SELECT earned_at FROM hunter_role_earned WHERE user_id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                earned_at = datetime.fromisoformat(row[0])
+                window = int(await get_setting("maintenance_window_days"))
+                if datetime.now(timezone.utc) < earned_at + timedelta(days=window):
+                    return
+
         window = int(await get_setting("maintenance_window_days"))
         pings = await count_in_window("pings", user_id, window)
         media_count = await count_in_window("media", user_id, window)
@@ -488,6 +514,7 @@ async def check_access(user_id, guild):
         required = int(await get_setting("pings_to_gain"))
         if total_pings >= required:
             await member.add_roles(hunter_role, reason="Reached ping threshold")
+            await record_hunter_role_earned(user_id)
             channel = get_announcement_channel(guild)
             if channel:
                 try:
@@ -510,6 +537,12 @@ async def on_ready():
         print(f"Synced {len(synced)} slash commands")
     except Exception as e:
         print(f"Failed to sync slash commands: {e}")
+
+    # Record bot start time (only set once, never overwritten)
+    existing_start = await get_setting("bot_start_time")
+    if not existing_start:
+        await set_setting("bot_start_time", datetime.now(timezone.utc).isoformat())
+
     if not daily_maintenance.is_running():
         daily_maintenance.start()
 
@@ -522,6 +555,7 @@ async def on_member_join(member):
         if silver_role and hunter_role and silver_role in member.roles:
             try:
                 await member.add_roles(hunter_role, reason="MEE6 Silver+ head start")
+                await record_hunter_role_earned(member.id)
                 channel = get_announcement_channel(member.guild)
                 if channel:
                     await channel.send(
@@ -554,6 +588,7 @@ async def on_message(message):
                         if member and hunter_role not in member.roles:
                             try:
                                 await member.add_roles(hunter_role, reason="MEE6 Gold/Diamond achievement")
+                                await record_hunter_role_earned(member.id)
                                 # Post to #poke-hunter-access
                                 for ch in guild.text_channels:
                                     if ch.name == "poke-hunter-access":
@@ -575,15 +610,12 @@ async def on_message(message):
     channel_id = message.channel.id
     user_id = message.author.id
 
-    # Track pings in all channels except server-announcements and get-roles
+    # Track pings in all channels except server-announcements and get-roles (max 1 ping per message)
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
         store_mentions = extract_store_from_text(message)
         if store_mentions:
-            # Extract location from message content
             loc = extract_location_from_text(message.content)
-
-            for mention in store_mentions:
-                await log_ping(user_id, channel_id, mention["store"], mention["role_type"], message.content[:500], loc)
+            await log_ping(user_id, channel_id, store_mentions[0]["store"], store_mentions[0]["role_type"], message.content[:500], loc)
             await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
@@ -605,6 +637,7 @@ async def daily_maintenance():
     guild = bot.guilds[0] if bot.guilds else None
     if not guild:
         return
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT DISTINCT user_id FROM pings")
         rows = await cursor.fetchall()
@@ -819,6 +852,7 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
             hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
             if hunter_role and hunter_role not in member.roles:
                 await member.add_roles(hunter_role, reason="Whitelisted by admin")
+                await record_hunter_role_earned(member.id)
             await ctx.send(f"✅ {member.mention} has been whitelisted (permanent Hunter access).")
         else:
             await db.execute("DELETE FROM whitelist WHERE user_id = ?", (member.id,))
@@ -1060,6 +1094,7 @@ async def mee6sync_cmd(ctx):
         if silver_role in member.roles and hunter_role not in member.roles:
             try:
                 await member.add_roles(hunter_role, reason="MEE6 sync")
+                await record_hunter_role_earned(member.id)
                 count += 1
             except discord.Forbidden:
                 pass
@@ -1146,6 +1181,7 @@ async def mee6import_cmd(ctx, level_threshold: int = None):
         if lvl >= level_threshold:
             try:
                 await member.add_roles(hunter_role, reason=f"MEE6 import: Level {lvl}")
+                await record_hunter_role_earned(member.id)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1297,6 +1333,7 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
         if level >= level_threshold:
             try:
                 await member.add_roles(hunter_role, reason=f"MEE6 scan: Level {level}")
+                await record_hunter_role_earned(member.id)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1414,6 +1451,7 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
         if count >= msg_threshold:
             try:
                 await member.add_roles(hunter_role, reason=f"Message scan: {count} messages")
+                await record_hunter_role_earned(member.id)
                 granted += 1
             except discord.Forbidden:
                 pass
