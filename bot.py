@@ -2000,7 +2000,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
     scan_channels = [s for s in store_list]  # walmart, target, etc.
 
     # Dynamically find all channels under Ft Worth Area Hunts and Dallas Area Hunts categories
-    location_categories = ["ft worth area hunts", "dallas area hunts"]
+    location_categories = ["ft worth area hunts", "dallas area hunts", "others", "store general info"]
     for cat_name in location_categories:
         category = discord.utils.get(ctx.guild.categories, name__iexact=cat_name)
         if category:
@@ -2009,7 +2009,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                     scan_channels.append(ch.name)
 
     # Always include these hunting/general channels
-    for ch_name in ["open-hunting", "training-hunting", "general-chat"]:
+    for ch_name in ["open-hunting", "general-chat"]:
         if ch_name not in scan_channels:
             scan_channels.append(ch_name)
 
@@ -2032,7 +2032,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
             added = 0
             skipped = 0
             seen_messages = set()
-            is_store_or_hunting = channel_name in store_list or channel_name in ["open-hunting", "training-hunting"] or channel.category and channel.category.name.lower() in location_categories
+            is_store_or_hunting = channel_name in store_list or channel_name in ["open-hunting"] or channel.category and channel.category.name.lower() in location_categories
             async for message in channel.history(limit=2000, after=cutoff):
                 if message.author.bot:
                     continue

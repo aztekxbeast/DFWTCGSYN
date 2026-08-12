@@ -8,7 +8,7 @@
   "chat_window_days": 7,
   "chat_channels": ["general-chat", "open-hunting", "general"],
   "store_channels": ["academy", "aldi", "amazon", "barnes-and-noble", "best-buy", "dollar-tree-dollar-general-family-dollar", "gamestop", "kroger", "micro-center", "mitsuwa", "others", "other-pokémon", "pokemon-center", "sam's-costco", "scheels", "target", "walgreens-cvs", "walmart"],
-  "training_channel": "open-hunting",
+  "location_categories": ["ft worth area hunts", "dallas area hunts", "others", "store general info"],
   "mee6_level_threshold": 10,
   "messages_to_gain": 50,
   "mee6_silver_role_name": "Silver",
