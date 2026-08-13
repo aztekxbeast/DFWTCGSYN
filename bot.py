@@ -700,7 +700,7 @@ async def on_message(message):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    """Allow Admins and Mods to report fake pings with 🚩 or ❌ reaction."""
+    """Allow Admins, Mods, and Pokemon Hunters to report fake pings with 🚩 or ❌ reaction."""
     if str(payload.emoji) not in ("🚩", "❌"):
         return
 
@@ -712,8 +712,10 @@ async def on_raw_reaction_add(payload):
     if not user or user.bot:
         return
 
-    # Only Admins and Mods can flag fake pings
-    if not is_admin_or_mod(user):
+    # Admins, Mods, and Pokemon Hunters can flag fake pings
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    is_authorized = is_admin_or_mod(user) or (hunter_role and hunter_role in user.roles)
+    if not is_authorized:
         return
 
     channel = guild.get_channel(payload.channel_id)
