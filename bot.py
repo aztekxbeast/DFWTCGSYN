@@ -768,6 +768,8 @@ async def on_raw_reaction_add(payload):
             await db.commit()
 
             mod_chat = guild.get_channel(MOD_CHAT_CHANNEL_ID)
+            if not mod_chat:
+                mod_chat = discord.utils.get(guild.text_channels, name="mods-chat")
             if mod_chat:
                 try:
                     await mod_chat.send(
