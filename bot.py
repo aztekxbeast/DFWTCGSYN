@@ -2058,6 +2058,37 @@ async def restorehunters_cmd(ctx, *names):
     await ctx.send(msg)
 
 
+@bot.command(name="addping")
+@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+async def addping_cmd(ctx, member: discord.Member = None, count: int = None):
+    """Add pings to a user's record (mods/admins).
+    Usage: !addping @user <count>
+    Example: !addping @Reaper120 5"""
+    if not member or count is None:
+        await ctx.send("Usage: `!addping @user <count>`\nExample: `!addping @Reaper120 5`")
+        return
+    if count < 0:
+        await ctx.send("❌ Count must be 0 or more.")
+        return
+    if count > 100:
+        await ctx.send("❌ Max 100 pings per call.")
+        return
+
+    now = now_iso()
+    async with aiosqlite.connect(DB_PATH) as db:
+        for _ in range(count):
+            await db.execute(
+                "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (member.id, ctx.channel.id, "manual", "manual", now, "Manually added ping", None, None)
+            )
+        await db.commit()
+
+    total = await count_total("pings", member.id)
+    await ctx.send(f"✅ Added **{count}** ping(s) to {member.mention}. New total: **{total}**.")
+    # Auto-grant the Hunter role if they now meet the threshold
+    await check_grant_access(member.id, ctx.guild)
+
+
 @bot.command(name="fixlocations")
 @commands.has_role(ADMIN_ROLE_ID)
 async def fixlocations_cmd(ctx):
