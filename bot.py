@@ -23,6 +23,7 @@ ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv("ANNOUNCEMENTS_CHANNEL_ID", "1502087476
 GETROLES_CHANNEL_ID = int(os.getenv("GETROLES_CHANNEL_ID", "1502144792358817933"))
 GENERAL_CHAT_CHANNEL_ID = int(os.getenv("GENERAL_CHAT_CHANNEL_ID", "0"))
 OPEN_HUNTING_CHANNEL_ID = int(os.getenv("OPEN_HUNTING_CHANNEL_ID", "0"))
+MOD_CHAT_CHANNEL_ID = int(os.getenv("MOD_CHAT_CHANNEL_ID", "0"))
 PULLS_CHANNEL_ID = int(os.getenv("PULLS_CHANNEL_ID", "0"))
 SUCCESS_CHANNEL_ID = int(os.getenv("SUCCESS_CHANNEL_ID", "0"))
 MEE6_SILVER_ROLE_ID = int(os.getenv("MEE6_SILVER_ROLE_ID", "0"))
@@ -766,13 +767,15 @@ async def on_raw_reaction_add(payload):
             )
             await db.commit()
 
-            try:
-                await channel.send(
-                    f"🚩 **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention}. "
-                    f"Double ping points (-2) deducted as a penalty."
-                )
-            except discord.Forbidden:
-                pass
+            mod_chat = guild.get_channel(MOD_CHAT_CHANNEL_ID)
+            if mod_chat:
+                try:
+                    await mod_chat.send(
+                        f"🚩 **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention} in {channel.mention}. "
+                        f"Double ping points (-2) deducted as a penalty."
+                    )
+                except discord.Forbidden:
+                    pass
 
 
 # ─── Maintenance Task ────────────────────────────────────────────────────────
