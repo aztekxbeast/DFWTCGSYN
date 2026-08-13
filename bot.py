@@ -2042,7 +2042,7 @@ async def fixlinks_cmd(ctx):
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT id, user_id, channel_id, timestamp, message_content FROM pings WHERE message_id IS NULL"
+            "SELECT id, user_id, channel_id, timestamp, message_content FROM pings WHERE message_id IS NULL ORDER BY timestamp DESC"
         )
         pings_to_fix = await cursor.fetchall()
 
@@ -2083,13 +2083,13 @@ async def fixlinks_cmd(ctx):
                 pass
 
         try:
-            async for msg in channel.history(limit=50, around=dt):
+            async for msg in channel.history(limit=100, around=dt):
                 if msg.author.id == user_id and not msg.author.bot:
                     content_lower = msg.content.lower()
                     if '@location' not in content_lower and '@oos' not in content_lower:
                         continue
                     ts_diff = abs((msg.created_at - dt).total_seconds())
-                    if ts_diff < 120:
+                    if ts_diff < 300:
                         async with aiosqlite.connect(DB_PATH) as db:
                             await db.execute(
                                 "UPDATE pings SET message_id = ? WHERE id = ?",
