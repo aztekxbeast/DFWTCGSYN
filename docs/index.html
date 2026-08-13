@@ -3,61 +3,396 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PokeHunt Bot - Legal</title>
+    <title>DFW TCG Syndicate — Community & Restock Network</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-color: #0d0f17;
+            --card-bg: rgba(22, 27, 46, 0.7);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --primary: #ff4757;
+            --primary-glow: rgba(255, 71, 87, 0.4);
+            --accent: #2ed573;
+            --text-main: #f1f2f6;
+            --text-muted: #a4b0be;
+            --gradient-1: linear-gradient(135deg, #ff4757 0%, #ff6b81 100%);
+            --gradient-2: linear-gradient(135deg, #70a1ff 0%, #1e90ff 100%);
+            --gradient-3: linear-gradient(135deg, #2ed573 0%, #10ac84 100%);
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; line-height: 1.6; }
-        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
-        h1 { color: #e94560; margin-bottom: 10px; }
-        h2 { color: #e94560; margin-top: 30px; margin-bottom: 10px; }
-        h3 { color: #0f3460; background: #e94560; display: inline-block; padding: 2px 10px; border-radius: 4px; margin-top: 20px; }
-        a { color: #e94560; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .nav { display: flex; gap: 20px; margin-bottom: 30px; padding: 15px; background: #16213e; border-radius: 8px; }
-        .nav a { font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-        th, td { border: 1px solid #333; padding: 10px; text-align: left; }
-        th { background: #16213e; color: #e94560; }
-        ul { margin-left: 20px; margin-top: 10px; }
-        li { margin-bottom: 8px; }
-        .footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #333; color: #888; font-size: 0.9em; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Header & Nav */
+        header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(12px);
+            background: rgba(13, 15, 23, 0.85);
+            border-bottom: 1px solid var(--border-color);
+            z-index: 1000;
+        }
+
+        .logo {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo span {
+            background: #ff4757;
+            color: #fff;
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            border-radius: 20px;
+            -webkit-text-fill-color: #fff;
+        }
+
+        nav {
+            display: flex;
+            gap: 30px;
+            align-items: center;
+        }
+
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.95rem;
+            transition: color 0.3s;
+        }
+
+        nav a:hover {
+            color: var(--text-main);
+        }
+
+        .btn-join {
+            background: var(--gradient-1);
+            color: white;
+            padding: 10px 24px;
+            border-radius: 30px;
+            font-weight: 700;
+            text-decoration: none;
+            box-shadow: 0 4px 15px var(--primary-glow);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn-join:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 71, 87, 0.6);
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 160px 20px 100px;
+            max-width: 1200px;
+            margin: 0 auto;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            background: rgba(255, 71, 87, 0.1);
+            border: 1px solid rgba(255, 71, 87, 0.3);
+            border-radius: 20px;
+            color: var(--primary);
+            font-weight: 600;
+            font-size: 0.85rem;
+            margin-bottom: 24px;
+        }
+
+        .hero h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 3.5rem;
+            font-weight: 800;
+            line-height: 1.15;
+            margin-bottom: 20px;
+            background: linear-gradient(180deg, #ffffff 0%, #a4b0be 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 720px;
+            margin: 0 auto 40px;
+        }
+
+        /* Feature Cards */
+        .features {
+            max-width: 1200px;
+            margin: 0 auto 100px;
+            padding: 0 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 30px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 35px;
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s, border-color 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .card-icon {
+            width: 54px;
+            height: 54px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.6rem;
+            margin-bottom: 24px;
+        }
+
+        .icon-1 { background: rgba(255, 71, 87, 0.15); color: #ff4757; }
+        .icon-2 { background: rgba(46, 213, 115, 0.15); color: #2ed573; }
+        .icon-3 { background: rgba(112, 161, 255, 0.15); color: #70a1ff; }
+
+        .card h3 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .card p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        /* Fair System Section */
+        .section-fairness {
+            background: rgba(22, 27, 46, 0.4);
+            border-y: 1px solid var(--border-color);
+            padding: 100px 20px;
+        }
+
+        .fairness-container {
+            max-width: 1100px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 60px;
+            align-items: center;
+        }
+
+        .fairness-text h2 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 20px;
+        }
+
+        .fairness-text p {
+            color: var(--text-muted);
+            font-size: 1.05rem;
+            margin-bottom: 30px;
+        }
+
+        .check-list {
+            list-style: none;
+        }
+
+        .check-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 15px;
+            margin-bottom: 18px;
+            font-size: 1rem;
+            color: var(--text-main);
+        }
+
+        .check-icon {
+            background: rgba(46, 213, 115, 0.2);
+            color: #2ed573;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+
+        .badge-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+        }
+
+        .stat-card h4 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: var(--primary);
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .stat-card p {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-top: 5px;
+        }
+
+        /* Footer */
+        footer {
+            padding: 50px 20px;
+            text-align: center;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        footer a {
+            color: var(--text-muted);
+            margin: 0 10px;
+            text-decoration: none;
+        }
+
+        footer a:hover { color: var(--text-main); }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.4rem; }
+            .fairness-container { grid-template-columns: 1fr; }
+            header { padding: 15px 20px; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>PokeHunt Discord Bot</h1>
-        <p>Ping-based role access automation for Pokemon TCG communities</p>
 
-        <div class="nav">
-            <a href="privacy.html">Privacy Policy</a>
-            <a href="terms.html">Terms of Service</a>
+    <header>
+        <div class="logo">
+            DFW TCG SYNDICATE <span>COMMUNITY</span>
+        </div>
+        <nav>
+            <a href="#features">Features</a>
+            <a href="#integrity">Community Integrity</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="terms.html">Terms</a>
+            <a href="https://discord.gg" target="_blank" class="btn-join">Join Discord</a>
+        </nav>
+    </header>
+
+    <section class="hero">
+        <div class="hero-badge">⚡ Real-Time Community Restock Network</div>
+        <h1>Fair, Activity-Driven Hunting For Dedicated TCG Collectors</h1>
+        <p>Join DFW's premier Pokémon & TCG collector network. Powered by real-time community pings, verified store reports, and predictive restock insights.</p>
+        <a href="https://discord.gg" target="_blank" class="btn-join" style="font-size: 1.1rem; padding: 14px 36px;">Join The Syndicate Network</a>
+    </section>
+
+    <section class="features" id="features">
+        <div class="card">
+            <div class="card-icon icon-1">📡</div>
+            <h3>Real-Time Location Pings</h3>
+            <p>Get instant notifications for store restocks across DFW (#target, #walmart, #gamestop, #pokemon-center, and local hobby shops) posted directly by fellow active collectors.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon icon-2">🔮</div>
+            <h3>Restock Prediction Engine</h3>
+            <p>Our intelligent system analyzes historical community reports to predict store restock days and pattern trends for your local area stores.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon icon-3">🏆</div>
+            <h3>Earned Access System</h3>
+            <p>Access to specialized hunter channels is reserved for active community contributors. Earn and maintain access naturally by sharing stock updates, media, or engaging with fellow members.</p>
+        </div>
+    </section>
+
+    <section class="section-fairness" id="integrity">
+        <div class="fairness-container">
+            <div class="fairness-text">
+                <h2>Built For Collectors, Protected From Lurkers</h2>
+                <p>We believe restock alerts should benefit active collectors who contribute to the community—not passive lurkers or resellers.</p>
+                <ul class="check-list">
+                    <li>
+                        <div class="check-icon">✓</div>
+                        <div><strong>Automated Quality Checks:</strong> Every contribution undergoes content validation and anti-spam verification to keep alerts accurate.</div>
+                    </li>
+                    <li>
+                        <div class="check-icon">✓</div>
+                        <div><strong>Community Reporting:</strong> Suspicious alerts or false reports are immediately flagged by community members to maintain trust.</div>
+                    </li>
+                    <li>
+                        <div class="check-icon">✓</div>
+                        <div><strong>Media Verification:</strong> Authenticated media proof in pull & success channels ensures real collector engagement.</div>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="badge-grid">
+                <div class="stat-card">
+                    <h4>100%</h4>
+                    <p>Community Driven</p>
+                </div>
+                <div class="stat-card">
+                    <h4>15+</h4>
+                    <p>Tracked Retail Outlets</p>
+                </div>
+                <div class="stat-card">
+                    <h4>Real-Time</h4>
+                    <p>Live Location Alerts</p>
+                </div>
+                <div class="stat-card">
+                    <h4>Fair Access</h4>
+                    <p>Contributor Rewarded</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <p>&copy; 2026 DFW TCG Syndicate Community Network. All rights reserved.</p>
+        <p style="margin-top: 10px;">
+            <a href="privacy.html">Privacy Policy</a> |
+            <a href="terms.html">Terms of Service</a> |
             <a href="https://github.com/aztekxbeast/RepoHUB" target="_blank">GitHub</a>
-        </div>
+        </p>
+    </footer>
 
-        <h2>About</h2>
-        <p>PokeHunt is a free, open-source Discord bot that tracks user activity (role mentions, media posts, chat messages) to automatically manage Discord role access for Pokemon TCG hunting communities.</p>
-
-        <h2>Features</h2>
-        <ul>
-            <li>Ping tracking for in-store stock and OOS alerts</li>
-            <li>Media sharing verification in #pulls and #success channels</li>
-            <li>Chat activity monitoring</li>
-            <li>Automatic role granting/revoking based on activity thresholds</li>
-            <li>MEE6 Silver+ role sync</li>
-            <li>Admin commands for whitelist, settings, and manual overrides</li>
-        </ul>
-
-        <h2>Quick Links</h2>
-        <ul>
-            <li><a href="privacy.html">Privacy Policy</a></li>
-            <li><a href="terms.html">Terms of Service</a></li>
-            <li><a href="https://github.com/aztekxbeast/RepoHUB" target="_blank">Source Code (GitHub)</a></li>
-            <li><a href="https://github.com/aztekxbeast/RepoHUB/issues" target="_blank">Report Issues</a></li>
-        </ul>
-
-        <div class="footer">
-            <p>&copy; 2026 PokeHunt Bot. Open source under the MIT License.</p>
-        </div>
-    </div>
 </body>
 </html>

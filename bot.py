@@ -60,12 +60,22 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                image_hash TEXT
             );
             CREATE TABLE IF NOT EXISTS chat (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                message_content TEXT
+            );
+            CREATE TABLE IF NOT EXISTS flagged_pings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ping_id INTEGER NOT NULL,
+                reported_by INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                reason TEXT,
                 timestamp TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS whitelist (
@@ -88,11 +98,19 @@ async def init_db():
                 earned_at TEXT NOT NULL
             );
         """)
-        # Migration: add location column to existing pings tables
+        # Migrations for existing database schemas
         try:
             await db.execute("ALTER TABLE pings ADD COLUMN location TEXT")
         except Exception:
-            pass  # Column already exists
+            pass
+        try:
+            await db.execute("ALTER TABLE media ADD COLUMN image_hash TEXT")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE chat ADD COLUMN message_content TEXT")
+        except Exception:
+            pass
         await db.commit()
         for key, value in CONFIG.items():
             await db.execute(
@@ -399,31 +417,72 @@ def extract_store_from_text(message):
     return store_mentions
 
 
+import hashlib
+
 async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+        cursor = await db.execute(
             "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (user_id, channel_id, store, mention_type, now_iso(), content, location)
         )
+        ping_id = cursor.lastrowid
         await db.commit()
+        return ping_id
 
 
-async def log_media(user_id, channel_id):
+async def log_media(user_id, channel_id, attachment=None):
+    img_hash = None
+    if attachment:
+        try:
+            # Generate MD5 hash of attachment bytes to detect duplicate image uploads
+            data = await attachment.read()
+            img_hash = hashlib.md5(data).hexdigest()
+        except Exception:
+            pass
+
     async with aiosqlite.connect(DB_PATH) as db:
+        if img_hash:
+            # Check if this exact image hash was already logged by this user (or any user) in recent history
+            cursor = await db.execute(
+                "SELECT id FROM media WHERE image_hash = ?", (img_hash,)
+            )
+            if await cursor.fetchone():
+                return False  # Duplicate image detected, ignore
+
         await db.execute(
-            "INSERT INTO media (user_id, channel_id, timestamp) VALUES (?, ?, ?)",
-            (user_id, channel_id, now_iso())
+            "INSERT INTO media (user_id, channel_id, timestamp, image_hash) VALUES (?, ?, ?, ?)",
+            (user_id, channel_id, now_iso(), img_hash)
         )
         await db.commit()
+        return True
 
 
-async def log_chat(user_id, channel_id):
+async def log_chat(user_id, channel_id, content=""):
+    if not content:
+        return False
+
+    clean_content = content.strip()
+    
+    # Requirement: 15+ character minimum for chat tracking
+    if len(clean_content) < 15:
+        return False
+
     async with aiosqlite.connect(DB_PATH) as db:
+        # Anti-Spam: Check if user sent the EXACT same message content in the last 24 hours
+        cutoff = days_ago_iso(1)
+        cursor = await db.execute(
+            "SELECT id FROM chat WHERE user_id = ? AND message_content = ? AND timestamp >= ?",
+            (user_id, clean_content[:500], cutoff)
+        )
+        if await cursor.fetchone():
+            return False  # Duplicate message detected, ignore
+
         await db.execute(
-            "INSERT INTO chat (user_id, channel_id, timestamp) VALUES (?, ?, ?)",
-            (user_id, channel_id, now_iso())
+            "INSERT INTO chat (user_id, channel_id, timestamp, message_content) VALUES (?, ?, ?, ?)",
+            (user_id, channel_id, now_iso(), clean_content[:500])
         )
         await db.commit()
+        return True
 
 
 # ─── Access Engine ───────────────────────────────────────────────────────────
@@ -622,13 +681,92 @@ async def on_message(message):
     media_channels = CONFIG.get("media_channels", [])
     if message.channel.name in media_channels:
         if message.attachments:
-            for _ in message.attachments:
-                await log_media(user_id, channel_id)
-            await check_grant_access(user_id, message.guild)
+            for attachment in message.attachments:
+                logged = await log_media(user_id, channel_id, attachment)
+                if logged:
+                    await check_grant_access(user_id, message.guild)
 
     # Track chat messages in all channels except server-announcements and get-roles
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
-        await log_chat(user_id, channel_id)
+        await log_chat(user_id, channel_id, message.content)
+
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    """Allow Hunter role holders, Admins, and Mods to report fake pings with 🚩 reaction."""
+    if str(payload.emoji) != "🚩":
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+
+    user = guild.get_member(payload.user_id)
+    if not user or user.bot:
+        return
+
+    # Check if reporter is Hunter, Admin, or Mod
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    is_authorized = is_admin_or_mod(user) or (hunter_role and hunter_role in user.roles)
+    if not is_authorized:
+        return
+
+    channel = guild.get_channel(payload.channel_id)
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+
+    if message.author.bot:
+        return
+
+    # Check if this message contained a recorded ping in SQLite
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, user_id FROM pings WHERE channel_id = ? AND timestamp LIKE ?",
+            (channel.id, f"{message.created_at.strftime('%Y-%m-%d')}%")
+        )
+        ping_rows = await cursor.fetchall()
+        
+        # Match ping content if possible
+        matched_ping = None
+        for pid, p_uid in ping_rows:
+            if p_uid == message.author.id:
+                matched_ping = (pid, p_uid)
+                break
+
+        if matched_ping:
+            ping_id, author_id = matched_ping
+            # Check if already flagged
+            c_check = await db.execute("SELECT id FROM flagged_pings WHERE ping_id = ?", (ping_id,))
+            if await c_check.fetchone():
+                return  # Already flagged
+
+            # Record flag
+            await db.execute(
+                "INSERT INTO flagged_pings (ping_id, reported_by, user_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (ping_id, user.id, author_id, "Reaction 🚩 flag", now_iso())
+            )
+            # Remove original ping from table
+            await db.execute("DELETE FROM pings WHERE id = ?", (ping_id,))
+            # Deduct double points (Insert penalty dummy ping or remove extra ping)
+            # To deduct double ping points (-2 pings penalty): delete 1 extra ping if exists
+            await db.execute(
+                "DELETE FROM pings WHERE id IN (SELECT id FROM pings WHERE user_id = ? ORDER BY id DESC LIMIT 1)",
+                (author_id,)
+            )
+            await db.commit()
+
+            try:
+                await channel.send(
+                    f"🚩 **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention}. "
+                    f"Double ping points (-2) deducted as a penalty."
+                )
+            except discord.Forbidden:
+                pass
 
 
 # ─── Maintenance Task ────────────────────────────────────────────────────────
