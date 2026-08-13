@@ -2073,16 +2073,16 @@ async def backfill_cmd(ctx):
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT id, user_id, channel_id, store, timestamp FROM pings WHERE message_content IS NULL OR message_content = '' OR message_content = 'None'"
+            "SELECT id, user_id, channel_id, store, timestamp FROM pings WHERE message_content IS NULL OR message_content = '' OR message_content = 'None' OR message_id IS NULL"
         )
         pings_to_fix = await cursor.fetchall()
 
     if not pings_to_fix:
-        await ctx.send("✅ All pings already have message content.")
+        await ctx.send("✅ All pings already have message content and jump links.")
         scan_in_progress = False
         return
 
-    await ctx.send(f"Found **{len(pings_to_fix)}** pings missing content. Scanning channels...")
+    await ctx.send(f"Found **{len(pings_to_fix)}** pings missing content or jump links. Scanning channels...")
 
     channel_cache = {}
     for ping_id, user_id, channel_id, store, timestamp in pings_to_fix:
