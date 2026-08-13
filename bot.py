@@ -541,17 +541,25 @@ async def check_access(user_id, guild):
             if await cursor.fetchone():
                 return
 
-        # Don't revoke until user has had the role for the full maintenance window
+        # Don't revoke until user has had the role for the full maintenance window.
+        # If there's no record (role granted outside the bot, e.g. MEE6/manual), treat the
+        # user as newly earned so they always get the full grace period before removal.
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "SELECT earned_at FROM hunter_role_earned WHERE user_id = ?", (user_id,)
             )
             row = await cursor.fetchone()
-            if row:
-                earned_at = datetime.fromisoformat(row[0])
-                window = int(await get_setting("maintenance_window_days"))
-                if datetime.now(timezone.utc) < earned_at + timedelta(days=window):
-                    return
+            if not row:
+                await db.execute(
+                    "INSERT OR REPLACE INTO hunter_role_earned (user_id, earned_at) VALUES (?, ?)",
+                    (user_id, now_iso())
+                )
+                await db.commit()
+                return  # give them the full grace period
+            earned_at = datetime.fromisoformat(row[0])
+            window = int(await get_setting("maintenance_window_days"))
+            if datetime.now(timezone.utc) < earned_at + timedelta(days=window):
+                return
 
         window = int(await get_setting("maintenance_window_days"))
         pings = await count_in_window("pings", user_id, window)
@@ -2008,6 +2016,46 @@ async def listlocations_cmd(ctx):
     embed = discord.Embed(title="Tracked Location Words", description="\n".join(lines), color=discord.Color.blue())
     embed.set_footer(text="When these appear in store/hunting channels, they're tracked as pings for that channel's store.")
     await ctx.send(embed=embed)
+
+
+@bot.command(name="restorehunters")
+@commands.has_role(ADMIN_ROLE_ID)
+async def restorehunters_cmd(ctx, *names):
+    """Restore the Pokemon Hunter role (and verify pings) for listed users.
+    Usage: !restorehunters <name> <name> ...
+    With no names, restores the last batch removed by maintenance."""
+    DEFAULT_NAMES = [
+        "Reaper120", "Dan Wormald", "AnjunaMami", "Squeak3k", "mg1309",
+        "TheBlse", "mattie lite", "ValentinesLay", "PullGameStrong", "Britt",
+        "Kcapdog", "justhh.", "BAKA", "DucaDoan", "fboriginal",
+    ]
+    names = list(names) if names else DEFAULT_NAMES
+
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        await ctx.send("❌ Pokemon Hunter role not found.")
+        return
+
+    await ctx.send("🔄 Restoring Pokemon Hunter role...")
+    restored = []
+    not_found = []
+    for name in names:
+        member = ctx.guild.get_member_named(name)
+        if not member:
+            member = discord.utils.get(ctx.guild.members, name=name)
+        if not member:
+            not_found.append(name)
+            continue
+        if hunter_role not in member.roles:
+            await member.add_roles(hunter_role, reason="Manual restore by admin")
+        await record_hunter_role_earned(member.id)
+        total = await count_total("pings", member.id)
+        restored.append(f"<@{member.id}> ({name}) — {total} pings")
+
+    msg = "✅ **Restored Pokemon Hunter:**\n" + "\n".join(restored)
+    if not_found:
+        msg += "\n\n⚠️ **Not found (check spelling):** " + ", ".join(not_found)
+    await ctx.send(msg)
 
 
 @bot.command(name="fixlocations")
