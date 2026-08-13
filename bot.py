@@ -767,12 +767,10 @@ async def on_raw_reaction_add(payload):
             )
             await db.commit()
 
-            mod_chat = guild.get_channel(MOD_CHAT_CHANNEL_ID)
-            if not mod_chat:
-                mod_chat = discord.utils.get(guild.text_channels, name="mods-chat")
-            if mod_chat:
+            flag_channel = get_announcement_channel(guild)
+            if flag_channel:
                 try:
-                    await mod_chat.send(
+                    await flag_channel.send(
                         f"🚩 **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention} in {channel.mention}. "
                         f"Double ping points (-2) deducted as a penalty."
                     )
