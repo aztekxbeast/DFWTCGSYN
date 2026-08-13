@@ -2036,7 +2036,7 @@ async def stopscan_cmd(ctx):
 
 @bot.command(name="fixlinks")
 @commands.has_role(ADMIN_ROLE_ID)
-async def fixlinks_cmd(ctx, days: int = 30):
+async def fixlinks_cmd(ctx, days: int = 14):
     """Add jump-link message IDs to existing pings that don't have them.
     Usage: !fixlinks
     Usage: !fixlinks 7  (only last 7 days)"""
@@ -2047,6 +2047,8 @@ async def fixlinks_cmd(ctx, days: int = 30):
     scan_in_progress = True
 
     await ctx.send(f"🔄 Adding jump links to pings from the last {days} days...")
+    if days > 14:
+        await ctx.send("💡 Tip: Use `!fixlinks <days>` to scan a smaller window if this hangs.")
     progress_msg = await ctx.send("📡 Starting...")
     updated = 0
     scanned = 0
