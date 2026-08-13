@@ -2102,11 +2102,10 @@ async def fixlinks_cmd(ctx, days: int = 14):
                 async for msg in channel.history(limit=None, after=oldest_dt, before=newest_dt + timedelta(minutes=5)):
                     if msg.author.bot:
                         continue
-                    msg_lower = msg.content.lower()
-                    if '@location' not in msg_lower and '@oos' not in msg_lower:
-                        continue
 
-                    # Try to match this message against remaining pending pings
+                    # Try to match this message against remaining pending pings by user + timestamp.
+                    # We don't require @location/@oos here because some pings are triggered by store role
+                    # mentions (e.g. @Walmart) and don't include those tags.
                     matched_ping = None
                     for ping in pending:
                         ping_id, user_id, _, timestamp, _ = ping
@@ -2117,7 +2116,7 @@ async def fixlinks_cmd(ctx, days: int = 14):
                         except (ValueError, TypeError):
                             continue
                         ts_diff = abs((msg.created_at - dt).total_seconds())
-                        if ts_diff < 300:
+                        if ts_diff < 120:
                             matched_ping = ping
                             break
 
