@@ -1938,7 +1938,7 @@ async def restockhistory_cmd(ctx, *args):
                         short = e["content"][:80].replace("\n", " ")
                         if e.get("message_id") and e.get("channel_id") and e.get("guild_id"):
                             jump_url = f"https://discord.com/channels/{e['guild_id']}/{e['channel_id']}/{e['message_id']}"
-                            history_text += f"└ `{e['time']}` <@{e['user']}>: {short} — [Jump]({jump_url})\n"
+                            history_text += f"└ [{e['time']}]({jump_url}) <@{e['user']}>: {short}\n"
                         else:
                             history_text += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
 
