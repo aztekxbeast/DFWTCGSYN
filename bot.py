@@ -948,7 +948,9 @@ async def helpme_cmd(ctx):
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
                 "`!allStats` — Server-wide activity overview\n"
-                "`!sync` — Run manual access check"
+                "`!sync` — Run manual access check\n"
+                "`!addping @user <count>` — Add pings to a user\n"
+                "`!restorehunters` — Restore Hunter role for removed users"
             ),
             inline=False
         )
