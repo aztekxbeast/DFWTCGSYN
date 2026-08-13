@@ -2051,7 +2051,6 @@ async def fixlinks_cmd(ctx, days: int = 14):
         await ctx.send("💡 Tip: Use `!fixlinks <days>` to scan a smaller window if this hangs.")
     progress_msg = await ctx.send("📡 Starting...")
     updated = 0
-    scanned = 0
 
     cutoff = days_ago_iso(days)
 
@@ -2069,55 +2068,80 @@ async def fixlinks_cmd(ctx, days: int = 14):
 
         await ctx.send(f"Found **{len(pings_to_fix)}** pings missing jump links. Scanning channels...")
 
-        channel_cache = {}
-        for ping_id, user_id, channel_id, timestamp, content in pings_to_fix:
+        # Group pings by channel so we fetch each channel's history only once
+        pings_by_channel = defaultdict(list)
+        for ping in pings_to_fix:
+            pings_by_channel[ping[2]].append(ping)
+
+        channels_total = len(pings_by_channel)
+        channels_done = 0
+
+        for channel_id, channel_pings in pings_by_channel.items():
+            channel = ctx.guild.get_channel(channel_id)
+            if not channel:
+                continue
+            if channel.id in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
+                continue
             try:
-                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if not channel.permissions_for(ctx.guild.me).read_message_history:
+                    continue
+            except discord.Forbidden:
+                continue
+
+            # Sort pending pings by timestamp so we can walk history once
+            channel_pings.sort(key=lambda p: p[3])
+            pending = list(channel_pings)
+
+            try:
+                oldest_dt = datetime.fromisoformat(channel_pings[0][3].replace("Z", "+00:00"))
+                newest_dt = datetime.fromisoformat(channel_pings[-1][3].replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 continue
 
-            if channel_id not in channel_cache:
-                channel = ctx.guild.get_channel(channel_id)
-                if not channel:
-                    continue
-                if channel.id in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
-                    continue
-                try:
-                    if not channel.permissions_for(ctx.guild.me).read_message_history:
-                        continue
-                except discord.Forbidden:
-                    continue
-                channel_cache[channel_id] = channel
-
-            channel = channel_cache[channel_id]
-            scanned += 1
-
-            if scanned % 25 == 0:
-                try:
-                    await progress_msg.edit(content=f"📡 Scanned {scanned}/{len(pings_to_fix)} | Updated: {updated}")
-                except discord.Forbidden:
-                    pass
-
             try:
-                async for msg in channel.history(limit=100, around=dt):
-                    if msg.author.id == user_id and not msg.author.bot:
-                        content_lower = msg.content.lower()
-                        if '@location' not in content_lower and '@oos' not in content_lower:
+                async for msg in channel.history(limit=None, after=oldest_dt, before=newest_dt + timedelta(minutes=5)):
+                    if msg.author.bot:
+                        continue
+                    msg_lower = msg.content.lower()
+                    if '@location' not in msg_lower and '@oos' not in msg_lower:
+                        continue
+
+                    # Try to match this message against remaining pending pings
+                    matched_ping = None
+                    for ping in pending:
+                        ping_id, user_id, _, timestamp, _ = ping
+                        if msg.author.id != user_id:
+                            continue
+                        try:
+                            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                        except (ValueError, TypeError):
                             continue
                         ts_diff = abs((msg.created_at - dt).total_seconds())
                         if ts_diff < 300:
-                            async with aiosqlite.connect(DB_PATH) as db:
-                                await db.execute(
-                                    "UPDATE pings SET message_id = ? WHERE id = ?",
-                                    (msg.id, ping_id)
-                                )
-                                await db.commit()
-                            updated += 1
+                            matched_ping = ping
+                            break
+
+                    if matched_ping:
+                        ping_id = matched_ping[0]
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            await db.execute(
+                                "UPDATE pings SET message_id = ? WHERE id = ?",
+                                (msg.id, ping_id)
+                            )
+                            await db.commit()
+                        updated += 1
+                        pending.remove(matched_ping)
+                        if not pending:
                             break
             except Exception as e:
-                # Log and continue; don't let one bad channel kill the scan
-                print(f"fixlinks error for ping {ping_id}: {e}")
+                print(f"fixlinks error in channel {channel_id}: {e}")
                 continue
+
+            channels_done += 1
+            try:
+                await progress_msg.edit(content=f"📡 Channels scanned: {channels_done}/{channels_total} | Updated: {updated}")
+            except discord.Forbidden:
+                pass
 
         await progress_msg.edit(content=f"✅ Jump links added! Updated {updated} of {len(pings_to_fix)} pings.")
     except Exception as e:
