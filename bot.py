@@ -54,7 +54,8 @@ async def init_db():
                 mention_type TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 message_content TEXT,
-                location TEXT
+                location TEXT,
+                message_id INTEGER
             );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,15 +103,20 @@ async def init_db():
         try:
             await db.execute("ALTER TABLE pings ADD COLUMN location TEXT")
         except Exception:
-            pass
+            pass  # Column already exists
         try:
             await db.execute("ALTER TABLE media ADD COLUMN image_hash TEXT")
         except Exception:
-            pass
+            pass  # Column already exists
         try:
             await db.execute("ALTER TABLE chat ADD COLUMN message_content TEXT")
         except Exception:
-            pass
+            pass  # Column already exists
+        # Migration: add message_id column for jump links
+        try:
+            await db.execute("ALTER TABLE pings ADD COLUMN message_id INTEGER")
+        except Exception:
+            pass  # Column already exists
         await db.commit()
         for key, value in CONFIG.items():
             await db.execute(
@@ -419,11 +425,11 @@ def extract_store_from_text(message):
 
 import hashlib
 
-async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None):
+async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None, message_id=None):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, channel_id, store, mention_type, now_iso(), content, location)
+            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, channel_id, store, mention_type, now_iso(), content, location, message_id)
         )
         ping_id = cursor.lastrowid
         await db.commit()
@@ -674,7 +680,7 @@ async def on_message(message):
         store_mentions = extract_store_from_text(message)
         if store_mentions:
             loc = extract_location_from_text(message.content)
-            await log_ping(user_id, channel_id, store_mentions[0]["store"], store_mentions[0]["role_type"], message.content[:500], loc)
+            await log_ping(user_id, channel_id, store_mentions[0]["store"], store_mentions[0]["role_type"], message.content[:500], loc, message.id)
             await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
@@ -1866,13 +1872,13 @@ async def restockhistory_cmd(ctx, *args):
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
                 rows = await cursor.fetchall()
                 if not rows:
                     cursor = await db.execute(
-                        "SELECT timestamp, message_content, user_id, store, location FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                        "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                         (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                     )
                     rows = await cursor.fetchall()
@@ -1881,7 +1887,7 @@ async def restockhistory_cmd(ctx, *args):
                     location_not_found = False
             else:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
                     (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
                 )
                 rows = await cursor.fetchall()
@@ -1892,7 +1898,8 @@ async def restockhistory_cmd(ctx, *args):
 
             found_any = True
             daily_data = {}
-            for (ts, content, uid, ping_store, stored_loc) in rows:
+            guild_id = ctx.guild.id if ctx.guild else None
+            for (ts, content, uid, ping_store, stored_loc, channel_id, message_id) in rows:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                     # Convert to Central Time (CST/CDT)
@@ -1907,7 +1914,10 @@ async def restockhistory_cmd(ctx, *args):
                 daily_data[date_key].append({
                     "time": time_str,
                     "content": content[:100] if content else None,
-                    "user": uid
+                    "user": uid,
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "guild_id": guild_id
                 })
 
             sorted_dates = sorted(daily_data.items())
@@ -1926,7 +1936,11 @@ async def restockhistory_cmd(ctx, *args):
                 for e in entries[-3:]:
                     if e["content"]:
                         short = e["content"][:80].replace("\n", " ")
-                        history_text += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
+                        if e.get("message_id") and e.get("channel_id") and e.get("guild_id"):
+                            jump_url = f"https://discord.com/channels/{e['guild_id']}/{e['channel_id']}/{e['message_id']}"
+                            history_text += f"└ `{e['time']}` <@{e['user']}>: {short} — [Jump]({jump_url})\n"
+                        else:
+                            history_text += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
 
                 if len(entries) > 3:
                     history_text += f"└ ...and {len(entries) - 3} more\n"
@@ -2110,8 +2124,8 @@ async def backfill_cmd(ctx):
                     if ts_diff < 120:
                         async with aiosqlite.connect(DB_PATH) as db:
                             await db.execute(
-                                "UPDATE pings SET message_content = ? WHERE id = ?",
-                                (msg.content[:500], ping_id)
+                                "UPDATE pings SET message_content = ?, message_id = ? WHERE id = ?",
+                                (msg.content[:500], msg.id, ping_id)
                             )
                             await db.commit()
                         updated += 1
@@ -2255,8 +2269,8 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
                 for store in matched_stores:
                     await db.execute(
-                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc)
+                        "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (message.author.id, message.channel.id, store, mention_type, message.created_at.isoformat(), message.content[:500], loc, message.id)
                     )
                     added += 1
 
