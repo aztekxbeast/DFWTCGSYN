@@ -2024,6 +2024,87 @@ async def fixlocations_cmd(ctx):
     await ctx.send(f"✅ Updated location data for **{updated}** pings.")
 
 
+@bot.command(name="fixlinks")
+@commands.has_role(ADMIN_ROLE_ID)
+async def fixlinks_cmd(ctx):
+    """Add jump-link message IDs to existing pings that don't have them.
+    Usage: !fixlinks"""
+    global scan_in_progress
+    if scan_in_progress:
+        await ctx.send("❌ A scan is already running. Wait for it to finish.")
+        return
+    scan_in_progress = True
+
+    await ctx.send("🔄 Adding jump links to existing pings...")
+    progress_msg = await ctx.send("📡 Starting...")
+    updated = 0
+    scanned = 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, user_id, channel_id, timestamp, message_content FROM pings WHERE message_id IS NULL"
+        )
+        pings_to_fix = await cursor.fetchall()
+
+    if not pings_to_fix:
+        await ctx.send("✅ All pings already have jump links.")
+        scan_in_progress = False
+        return
+
+    await ctx.send(f"Found **{len(pings_to_fix)}** pings missing jump links. Scanning channels...")
+
+    channel_cache = {}
+    for ping_id, user_id, channel_id, timestamp, content in pings_to_fix:
+        try:
+            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+
+        if channel_id not in channel_cache:
+            channel = ctx.guild.get_channel(channel_id)
+            if not channel:
+                continue
+            if channel.id in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
+                continue
+            try:
+                if not channel.permissions_for(ctx.guild.me).read_message_history:
+                    continue
+            except discord.Forbidden:
+                continue
+            channel_cache[channel_id] = channel
+
+        channel = channel_cache[channel_id]
+        scanned += 1
+
+        if scanned % 50 == 0:
+            try:
+                await progress_msg.edit(content=f"📡 Scanned {scanned}/{len(pings_to_fix)} | Updated: {updated}")
+            except discord.Forbidden:
+                pass
+
+        try:
+            async for msg in channel.history(limit=50, around=dt):
+                if msg.author.id == user_id and not msg.author.bot:
+                    content_lower = msg.content.lower()
+                    if '@location' not in content_lower and '@oos' not in content_lower:
+                        continue
+                    ts_diff = abs((msg.created_at - dt).total_seconds())
+                    if ts_diff < 120:
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            await db.execute(
+                                "UPDATE pings SET message_id = ? WHERE id = ?",
+                                (msg.id, ping_id)
+                            )
+                            await db.commit()
+                        updated += 1
+                        break
+        except (discord.Forbidden, Exception):
+            continue
+
+    await progress_msg.edit(content=f"✅ Jump links added! Updated {updated} of {len(pings_to_fix)} pings.")
+    scan_in_progress = False
+
+
 @bot.command(name="backfill")
 @commands.has_role(ADMIN_ROLE_ID)
 async def backfill_cmd(ctx):
