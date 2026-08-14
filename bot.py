@@ -1831,7 +1831,6 @@ async def predict_cmd(ctx, *args):
 
 
 @bot.command(name="restockhistory", aliases=["rh"])
-@commands.has_role(ADMIN_ROLE_ID)
 async def restockhistory_cmd(ctx, *args):
     """View recent ping history for a store to identify restock dates.
     Usage: !restockhistory (all stores)
