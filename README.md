@@ -4,6 +4,60 @@ A single Python bot that tracks ping activity, media posts, and chat messages to
 
 ---
 
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Discord Server"
+        A[User sends message] --> B{on_message event}
+        B -->|@location / @OOS| C[Ping Tracker]
+        B -->|Attachment in #pulls|#success| D[Media Tracker]
+        B -->|Any channel| E[Chat Tracker]
+    end
+
+    subgraph "Bot Logic"
+        C --> F[(SQLite Database)]
+        D --> F
+        E --> F
+        F --> G[check_grant_access]
+        G -->|10+ pings| H[Grant Hunter Role]
+        G -->|Below threshold| I[Skip]
+    end
+
+    subgraph "Daily Maintenance"
+        J[daily_maintenance task] --> K[check_access]
+        K -->|Has role < 10 days| L[Skip - Grace Period]
+        K -->|Has role 10+ days| M{Activity Check}
+        M -->|4+ pings OR 4+ media OR 30+ chat| N[Keep Role]
+        M -->|Below all thresholds| O[Remove Role]
+    end
+
+    subgraph "MEE6 Integration"
+        P[MEE6 Silver+ on join] -->|Auto-grant| H
+        Q[MEE6 Gold/Diamond achievement] -->|Auto-grant| H
+    end
+
+    subgraph "External Services"
+        R[Fly.io Hosting] --> S[Persistent Volume]
+        S --> F
+        T[GitHub Repo] -->|Deploy| R
+    end
+
+    style H fill:#4CAF50,color:#fff
+    style O fill:#f44336,color:#fff
+    style L fill:#FFC107,color:#000
+```
+
+### Data Flow
+
+1. **Message arrives** → `on_message` event fires
+2. **Ping detection** → Checks for `@location`/`@OOS` mentions, store names, abbreviations, and location words
+3. **Database write** → Stores ping/media/chat record with timestamp
+4. **Access check** → If user has 10+ total pings, grant Hunter role automatically
+5. **Daily maintenance** → At 3 AM UTC, checks all Hunter holders against activity thresholds (only after 10-day grace period per user)
+
+---
+
 ## What This Bot Does
 
 - Counts `@location` / `@OOS` role mentions per user (ping tracker)
@@ -56,12 +110,20 @@ Vague location mentions (e.g. "alliance", "glade", "watauga", "beach") in store 
 | **#get-roles** | ❌ NOT tracked | ❌ | ❌ |
 | **#general-announcements** | ✅ Tracked | ❌ | ✅ |
 | **#open-hunting** | ✅ Tracked | ❌ | ✅ |
-| **#training-hunting** | ✅ Tracked | ❌ | ✅ |
 | **#general-chat** | ✅ Tracked | ❌ | ✅ |
 | **#ft-worth-area-hunts** | ✅ Tracked | ❌ | ✅ |
 | **#dallas-area-hunts** | ✅ Tracked | ❌ | ✅ |
 | **#pulls** | ✅ Tracked | ✅ | ✅ |
 | **#success** | ✅ Tracked | ✅ | ✅ |
+
+### Categories Tracked
+
+| Category | Ping Tracking | Chat Tracking |
+|----------|---------------|---------------|
+| **Ft Worth Area Hunts** | ✅ All channels | ✅ All channels |
+| **Dallas Area Hunts** | ✅ All channels | ✅ All channels |
+| **Others** | ✅ All channels | ✅ All channels |
+| **Store General Info** | ✅ All channels | ✅ All channels |
 
 ---
 
@@ -149,7 +211,7 @@ All settings stored in `config.json` and adjustable at runtime via `!set`:
   "chat_window_days": 7,
   "chat_channels": ["general-chat", "open-hunting", "general"],
   "store_channels": ["academy", "aldi", "amazon", "barnes-and-noble", "best-buy", "dollar-tree-dollar-general-family-dollar", "gamestop", "kroger", "micro-center", "mitsuwa", "others", "other-pokémon", "pokemon-center", "sam's-costco", "scheels", "target", "walgreens-cvs", "walmart"],
-  "training_channel": "open-hunting",
+  "location_categories": ["ft worth area hunts", "dallas area hunts", "others", "store general info"],
   "mee6_level_threshold": 10,
   "messages_to_gain": 50,
   "mee6_silver_role_name": "Silver",
@@ -268,6 +330,23 @@ Everything stored in `data/pokehunt.db` (SQLite):
 - [x] Location tracking and filtering
 - [ ] Per-location prediction confidence windows
 - [ ] Web admin dashboard (Phase 2 — only if needed)
+
+---
+
+## Issues Found & Solved
+
+| Issue | Root Cause | Solution |
+|-------|-----------|----------|
+| **Multiple pings per message** | A single `@location @OOS` message counted as 2 pings | Changed to log only the first ping per message (`store_mentions[0]`) |
+| **Premature role removal** | Daily maintenance ran before the 10-day window elapsed, removing users with only 1-2 days of data | Added `hunter_role_earned` table to track per-user role grant date; maintenance skips users who've had the role for less than the window |
+| **SSL certificate error on macOS** | Python 3.14 on macOS doesn't include system CA certificates | Added `certifi` to requirements and `SSL_CERT_FILE` env var in Dockerfile |
+| **Can't @mention users in whitelist** | Discord doesn't allow mentioning users in channels they don't have access to | Updated `!whitelist` to accept user IDs in addition to @mentions |
+| **Training-hunting channel no longer needed** | Server reorganized channel structure | Removed all `training-hunting` references; added "Others" and "Store General Info" category tracking |
+| **Fly.io machine sleeping** | Default Fly.io config stops machines when idle | Set `auto_stop_machines = false` and `min_machines_running = 1` in fly.toml |
+| **Bot announcements in wrong channel** | Messages posted to #server-announcements cluttered admin channel | Created `get_announcement_channel()` helper; all bot messages go to #poke-hunter-access |
+| **MEE6 role not syncing** | Bot only checked roles on member join | Added `!mee6sync` command and auto-grant for MEE6 Silver+ on join |
+| **Historical pings not counted** | Bot only tracked messages after deployment | Added `!deepbackfill` command to scan message history for past pings |
+| **Indentation crash killed deployment** | Tab/space mix in bot.py caused SyntaxError on Fly.io | Fixed indentation; added syntax check step before deploy |
 
 ---
 
