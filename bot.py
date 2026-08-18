@@ -1961,6 +1961,10 @@ async def restockhistory_cmd(ctx, *args):
             if len(sorted_dates) > 15:
                 history_text = f"*Showing last 15 of {len(sorted_dates)} dates*\n\n" + history_text
 
+            # Discord embed description limit is 4096 characters
+            if len(history_text) > 4096:
+                history_text = history_text[:4093] + "..."
+
             embed.description = history_text
             if location_not_found and location:
                 embed.set_footer(text=f"No pings found mentioning '{location}'. Try `!rh {s}` to see all {s} pings.")
