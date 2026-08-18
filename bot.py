@@ -688,9 +688,13 @@ async def on_message(message):
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
         store_mentions = extract_store_from_text(message)
         if store_mentions:
-            loc = extract_location_from_text(message.content)
-            await log_ping(user_id, channel_id, store_mentions[0]["store"], store_mentions[0]["role_type"], message.content[:500], loc, message.id)
-            await check_grant_access(user_id, message.guild)
+            # In open-hunting, only count pings with media attached
+            if message.channel.name == "open-hunting" and not message.attachments:
+                pass  # Don't log ping without photo in open-hunting
+            else:
+                loc = extract_location_from_text(message.content)
+                await log_ping(user_id, channel_id, store_mentions[0]["store"], store_mentions[0]["role_type"], message.content[:500], loc, message.id)
+                await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
     media_channels = CONFIG.get("media_channels", [])
