@@ -1943,6 +1943,7 @@ async def restockhistory_cmd(ctx, *args):
 
             sorted_dates = sorted(daily_data.items())
             recent_dates = sorted_dates[-15:]
+            recent_dates.reverse()  # newest first
 
             # Build per-date text blocks, then pack them into embed-safe chunks.
             # This avoids blindly truncating (and losing/mangling data) once we
@@ -1952,11 +1953,12 @@ async def restockhistory_cmd(ctx, *args):
 
             blocks = []
             for date_key, entries in recent_dates:
-                times = [e["time"] for e in entries]
+                entries_rev = list(reversed(entries))  # newest pings first
+                times = [e["time"] for e in entries_rev]
                 time_range = f"{times[0]}" if len(times) == 1 else f"{times[0]} - {times[-1]}"
                 block = f"**{date_key}** — {len(entries)} ping(s) @ {time_range}\n"
 
-                for e in entries[-3:]:
+                for e in entries_rev[:3]:
                     if e["content"]:
                         short = e["content"][:80].replace("\n", " ")
                         if e.get("message_id") and e.get("channel_id") and e.get("guild_id"):
