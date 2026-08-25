@@ -1884,29 +1884,34 @@ async def restockhistory_cmd(ctx, *args):
     await ctx.send(f"🔄 Loading restock history...")
     found_any = False
 
+    # Hard cap on rows pulled per store so a single busy store/location can't
+    # blow up memory or embed size. We only ever display the most recent
+    # ~15 dates anyway, so recent rows are all that matter.
+    ROW_LIMIT = 400
+
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
+                    (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
                 )
-                rows = await cursor.fetchall()
+                rows = list(reversed(await cursor.fetchall()))
                 if not rows:
                     cursor = await db.execute(
-                        "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                        (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                        "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
+                        (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
                     )
-                    rows = await cursor.fetchall()
+                    rows = list(reversed(await cursor.fetchall()))
                     location_not_found = True
                 else:
                     location_not_found = False
             else:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
+                    (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
                 )
-                rows = await cursor.fetchall()
+                rows = list(reversed(await cursor.fetchall()))
                 location_not_found = False
 
             if not rows:
@@ -1937,44 +1942,72 @@ async def restockhistory_cmd(ctx, *args):
                 })
 
             sorted_dates = sorted(daily_data.items())
+            recent_dates = sorted_dates[-15:]
 
-            embed = discord.Embed(
-                title=f"Restock History — {s.title()} (last {days}d)",
-                color=discord.Color.green()
-            )
+            # Build per-date text blocks, then pack them into embed-safe chunks.
+            # This avoids blindly truncating (and losing/mangling data) once we
+            # cross Discord's 4096-char description / 6000-char total limits.
+            SAFE_DESC_LIMIT = 3500  # margin below Discord's 4096 hard cap
+            MAX_EMBEDS = 4
 
-            history_text = ""
-            for date_key, entries in sorted_dates[-15:]:
+            blocks = []
+            for date_key, entries in recent_dates:
                 times = [e["time"] for e in entries]
                 time_range = f"{times[0]}" if len(times) == 1 else f"{times[0]} - {times[-1]}"
-                history_text += f"**{date_key}** — {len(entries)} ping(s) @ {time_range}\n"
+                block = f"**{date_key}** — {len(entries)} ping(s) @ {time_range}\n"
 
                 for e in entries[-3:]:
                     if e["content"]:
                         short = e["content"][:80].replace("\n", " ")
                         if e.get("message_id") and e.get("channel_id") and e.get("guild_id"):
                             jump_url = f"https://discord.com/channels/{e['guild_id']}/{e['channel_id']}/{e['message_id']}"
-                            history_text += f"└ [{e['time']}]({jump_url}) <@{e['user']}>: {short}\n"
+                            block += f"└ [{e['time']}]({jump_url}) <@{e['user']}>: {short}\n"
                         else:
-                            history_text += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
+                            block += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
 
                 if len(entries) > 3:
-                    history_text += f"└ ...and {len(entries) - 3} more\n"
-                history_text += "\n"
+                    block += f"└ ...and {len(entries) - 3} more\n"
+                block += "\n"
+                blocks.append(block)
 
-            if len(sorted_dates) > 15:
-                history_text = f"*Showing last 15 of {len(sorted_dates)} dates*\n\n" + history_text
+            chunks = []
+            current = ""
+            for block in blocks:
+                if current and len(current) + len(block) > SAFE_DESC_LIMIT:
+                    chunks.append(current)
+                    current = block
+                else:
+                    current += block
+            if current:
+                chunks.append(current)
+            if not chunks:
+                chunks = ["No history to display."]
 
-            # Discord embed description limit is 4096 characters
-            if len(history_text) > 4096:
-                history_text = history_text[:4093] + "..."
+            total_chunks = len(chunks)
+            shown_chunks = chunks[:MAX_EMBEDS]
 
-            embed.description = history_text
-            if location_not_found and location:
-                embed.set_footer(text=f"No pings found mentioning '{location}'. Try `!rh {s}` to see all {s} pings.")
-            else:
-                embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_data)} days")
-            await ctx.send(embed=embed)
+            for idx, chunk_text in enumerate(shown_chunks):
+                title = f"Restock History — {s.title()} (last {days}d)"
+                if total_chunks > 1:
+                    title += f" [{idx + 1}/{min(total_chunks, MAX_EMBEDS)}]"
+                embed = discord.Embed(title=title, description=chunk_text, color=discord.Color.green())
+
+                if idx == len(shown_chunks) - 1:
+                    if location_not_found and location:
+                        embed.set_footer(text=f"No pings found mentioning '{location}'. Try `!rh {s}` to see all {s} pings.")
+                    else:
+                        footer = f"Total: {len(rows)} pings across {len(daily_data)} days"
+                        if len(sorted_dates) > 15:
+                            footer += f" • Showing last 15 of {len(sorted_dates)} dates"
+                        if total_chunks > MAX_EMBEDS:
+                            footer += f" • Truncated: use `!rh {s} <location>` to narrow results"
+                        embed.set_footer(text=footer)
+
+                try:
+                    await ctx.send(embed=embed)
+                except discord.HTTPException:
+                    await ctx.send(f"⚠️ Couldn't display part of the history for **{s}** (too large). Try narrowing with a location, e.g. `!rh {s} <location>`.")
+                    break
 
     if not found_any:
         await ctx.send(f"No pings found in the last {days} days.")
