@@ -1842,7 +1842,7 @@ async def restockhistory_cmd(ctx, *args):
     Usage: !restockhistory target alliance (specific location)
     Usage: !restockhistory target 60 (last 60 days)"""
     store_list = CONFIG.get("store_channels", [])
-    days = 30
+    days = 14
     store = None
     location = None
 
