@@ -712,8 +712,8 @@ async def on_message(message):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    """Allow Admins, Mods, and Pokemon Hunters to report fake pings with 🚩 or ❌ reaction."""
-    if str(payload.emoji) not in ("🚩", "❌"):
+    """Allow Admins and Mods to flag fake pings with ❌ reaction."""
+    if str(payload.emoji) != "❌":
         return
 
     guild = bot.get_guild(payload.guild_id)
@@ -724,9 +724,8 @@ async def on_raw_reaction_add(payload):
     if not user or user.bot:
         return
 
-    # Admins, Mods, and Pokemon Hunters can flag fake pings
-    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
-    is_authorized = is_admin_or_mod(user) or (hunter_role and hunter_role in user.roles)
+    # Only Admins and Mods can flag fake pings
+    is_authorized = is_admin_or_mod(user)
     if not is_authorized:
         return
 
@@ -767,7 +766,7 @@ async def on_raw_reaction_add(payload):
             # Record flag
             await db.execute(
                 "INSERT INTO flagged_pings (ping_id, reported_by, user_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (ping_id, user.id, author_id, "Reaction 🚩 flag", now_iso())
+                (ping_id, user.id, author_id, "Reaction ❌ flag", now_iso())
             )
             # Remove original ping from table
             await db.execute("DELETE FROM pings WHERE id = ?", (ping_id,))
@@ -783,7 +782,7 @@ async def on_raw_reaction_add(payload):
             if flag_channel:
                 try:
                     await flag_channel.send(
-                        f"🚩 **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention} in {channel.mention}. "
+                        f"❌ **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention} in {channel.mention}. "
                         f"Double ping points (-2) deducted as a penalty."
                     )
                 except discord.Forbidden:
