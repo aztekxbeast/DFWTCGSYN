@@ -671,6 +671,14 @@ async def on_member_join(member):
             await member.add_roles(trainer_role, reason="Auto-assign Trainer on join")
         except discord.Forbidden:
             pass
+        # Auto-assign Hunting Noob to new Trainers (unless they already have Hunter)
+        hunter_role = member.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+        noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
+        if noob_role and not (hunter_role and hunter_role in member.roles):
+            try:
+                await member.add_roles(noob_role, reason="New member with Pokemon Trainer role")
+            except discord.Forbidden:
+                pass
 
 
 @bot.event
