@@ -17,6 +17,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 POKEMON_TRAINER_ROLE_ID = int(os.getenv("POKEMON_TRAINER_ROLE_ID", "0"))
 POKEMON_HUNTER_ROLE_ID = int(os.getenv("POKEMON_HUNTER_ROLE_ID", "0"))
+HUNTING_NOOB_ROLE_ID = int(os.getenv("HUNTING_NOOB_ROLE_ID", "0"))
 ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))
 MOD_ROLE_ID = int(os.getenv("MOD_ROLE_ID", "0"))
 ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv("ANNOUNCEMENTS_CHANNEL_ID", "1502087476305461349"))
@@ -156,6 +157,26 @@ async def record_hunter_role_earned(user_id):
             (user_id, now_iso())
         )
         await db.commit()
+
+
+async def remove_hunting_noob(member):
+    """Remove Hunting Noob role when user earns Hunter role."""
+    noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
+    if noob_role and noob_role in member.roles:
+        try:
+            await member.remove_roles(noob_role, reason="Earned Pokemon Hunter role")
+        except discord.Forbidden:
+            pass
+
+
+async def assign_hunting_noob(member):
+    """Assign Hunting Noob role when user loses Hunter role."""
+    noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
+    if noob_role and noob_role not in member.roles:
+        try:
+            await member.add_roles(noob_role, reason="Lost Pokemon Hunter role")
+        except discord.Forbidden:
+            pass
 
 
 def days_ago_iso(days):
@@ -512,6 +533,7 @@ async def check_grant_access(user_id, guild):
     if total_pings >= required:
         await member.add_roles(hunter_role, reason="Reached ping threshold")
         await record_hunter_role_earned(user_id)
+        await remove_hunting_noob(member)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -574,6 +596,7 @@ async def check_access(user_id, guild):
             return
 
         await member.remove_roles(hunter_role, reason="Failed activity maintenance")
+        await assign_hunting_noob(member)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -589,6 +612,7 @@ async def check_access(user_id, guild):
         if total_pings >= required:
             await member.add_roles(hunter_role, reason="Reached ping threshold")
             await record_hunter_role_earned(user_id)
+            await remove_hunting_noob(member)
             channel = get_announcement_channel(guild)
             if channel:
                 try:
@@ -630,6 +654,7 @@ async def on_member_join(member):
             try:
                 await member.add_roles(hunter_role, reason="MEE6 Silver+ head start")
                 await record_hunter_role_earned(member.id)
+                await remove_hunting_noob(member)
                 channel = get_announcement_channel(member.guild)
                 if channel:
                     await channel.send(
@@ -663,6 +688,7 @@ async def on_message(message):
                             try:
                                 await member.add_roles(hunter_role, reason="MEE6 Gold/Diamond achievement")
                                 await record_hunter_role_earned(member.id)
+                                await remove_hunting_noob(member)
                                 # Post to #poke-hunter-access
                                 for ch in guild.text_channels:
                                     if ch.name == "poke-hunter-access":
@@ -1014,6 +1040,7 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
             if hunter_role and hunter_role not in member.roles:
                 await member.add_roles(hunter_role, reason="Whitelisted by admin")
                 await record_hunter_role_earned(member.id)
+                await remove_hunting_noob(member)
             await ctx.send(f"✅ {member.mention} has been whitelisted (permanent Hunter access).")
         else:
             await db.execute("DELETE FROM whitelist WHERE user_id = ?", (member.id,))
@@ -1256,6 +1283,7 @@ async def mee6sync_cmd(ctx):
             try:
                 await member.add_roles(hunter_role, reason="MEE6 sync")
                 await record_hunter_role_earned(member.id)
+                await remove_hunting_noob(member)
                 count += 1
             except discord.Forbidden:
                 pass
@@ -1343,6 +1371,7 @@ async def mee6import_cmd(ctx, level_threshold: int = None):
             try:
                 await member.add_roles(hunter_role, reason=f"MEE6 import: Level {lvl}")
                 await record_hunter_role_earned(member.id)
+                await remove_hunting_noob(member)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1495,6 +1524,7 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
             try:
                 await member.add_roles(hunter_role, reason=f"MEE6 scan: Level {level}")
                 await record_hunter_role_earned(member.id)
+                await remove_hunting_noob(member)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1613,6 +1643,7 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
             try:
                 await member.add_roles(hunter_role, reason=f"Message scan: {count} messages")
                 await record_hunter_role_earned(member.id)
+                await remove_hunting_noob(member)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -2092,6 +2123,7 @@ async def restorehunters_cmd(ctx, *names):
         if hunter_role not in member.roles:
             await member.add_roles(hunter_role, reason="Manual restore by admin")
         await record_hunter_role_earned(member.id)
+        await remove_hunting_noob(member)
         total = await count_total("pings", member.id)
         restored.append(f"<@{member.id}> ({name}) — {total} pings")
 
@@ -2099,6 +2131,37 @@ async def restorehunters_cmd(ctx, *names):
     if not_found:
         msg += "\n\n⚠️ **Not found (check spelling):** " + ", ".join(not_found)
     await ctx.send(msg)
+
+
+@bot.command(name="assignnoobs")
+@commands.has_role(ADMIN_ROLE_ID)
+async def assignnoobs_cmd(ctx):
+    """One-time: Assign Hunting Noob role to all users without Hunter role."""
+    guild = ctx.guild
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    noob_role = guild.get_role(HUNTING_NOOB_ROLE_ID)
+    if not hunter_role or not noob_role:
+        await ctx.send("❌ Could not find Hunter or Noob role.")
+        return
+
+    assigned = 0
+    skipped = 0
+    for member in guild.members:
+        if member.bot:
+            continue
+        if hunter_role in member.roles:
+            skipped += 1
+            continue
+        if noob_role in member.roles:
+            skipped += 1
+            continue
+        try:
+            await member.add_roles(noob_role, reason="Initial Hunting Noob assignment")
+            assigned += 1
+        except discord.Forbidden:
+            pass
+
+    await ctx.send(f"✅ Assigned **Hunting Noob** to {assigned} users. Skipped {skipped} (already have Hunter or Noob role).")
 
 
 @bot.command(name="addping")
