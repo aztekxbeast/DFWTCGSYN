@@ -170,9 +170,10 @@ async def remove_hunting_noob(member):
 
 
 async def assign_hunting_noob(member):
-    """Assign Hunting Noob role when user loses Hunter role."""
+    """Assign Hunting Noob role when user loses Hunter role (only if they have Pokemon Trainer role)."""
     noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
-    if noob_role and noob_role not in member.roles:
+    trainer_role = member.guild.get_role(POKEMON_TRAINER_ROLE_ID)
+    if noob_role and noob_role not in member.roles and trainer_role and trainer_role in member.roles:
         try:
             await member.add_roles(noob_role, reason="Lost Pokemon Hunter role")
         except discord.Forbidden:
@@ -2136,18 +2137,22 @@ async def restorehunters_cmd(ctx, *names):
 @bot.command(name="assignnoobs")
 @commands.has_role(ADMIN_ROLE_ID)
 async def assignnoobs_cmd(ctx):
-    """One-time: Assign Hunting Noob role to all users without Hunter role."""
+    """Assign Hunting Noob role to all Pokemon Trainer users without Hunter role."""
     guild = ctx.guild
+    trainer_role = guild.get_role(POKEMON_TRAINER_ROLE_ID)
     hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
     noob_role = guild.get_role(HUNTING_NOOB_ROLE_ID)
-    if not hunter_role or not noob_role:
-        await ctx.send("❌ Could not find Hunter or Noob role.")
+    if not trainer_role or not hunter_role or not noob_role:
+        await ctx.send("❌ Could not find Trainer, Hunter, or Noob role.")
         return
 
     assigned = 0
     skipped = 0
     for member in guild.members:
         if member.bot:
+            continue
+        if trainer_role not in member.roles:
+            skipped += 1
             continue
         if hunter_role in member.roles:
             skipped += 1
@@ -2156,12 +2161,12 @@ async def assignnoobs_cmd(ctx):
             skipped += 1
             continue
         try:
-            await member.add_roles(noob_role, reason="Initial Hunting Noob assignment")
+            await member.add_roles(noob_role, reason="Hunting Noob assignment for Trainers")
             assigned += 1
         except discord.Forbidden:
             pass
 
-    await ctx.send(f"✅ Assigned **Hunting Noob** to {assigned} users. Skipped {skipped} (already have Hunter or Noob role).")
+    await ctx.send(f"✅ Assigned **Hunting Noob** to {assigned} users (Pokemon Trainer role holders). Skipped {skipped}.")
 
 
 @bot.command(name="addping")
