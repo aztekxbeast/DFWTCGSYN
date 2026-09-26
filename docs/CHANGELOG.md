@@ -122,15 +122,35 @@ Prints:
 
 ### `!addping @user <count>` (Admin · Mod only)
 
-Still staff-only. Each insert now records **who** ran it.
+Still staff-only. Each insert now records **who** ran it (`pings.added_by` + `admin_actions`).
 
-**Unauthorized use** → bot **replies** to that message and tags **`@aztekbeast`** so there is a permanent log.
-
-**Example (staff)**
+**Staff example**
 ```
 !addping @Member 5
 ```
-Reply will include who issued it.
+Bot reply includes who issued it (e.g. `Added 5 ping(s) to @Member (by @Mod). Counted total: 12.`).
+
+#### If someone is NOT Admin or Mod
+
+They **cannot** add pings. The bot will:
+
+1. **Not** insert any pings  
+2. **Reply** to their command message (so the attempt is stuck in the thread)  
+3. Tag **the person who tried it** and **`@aztekbeast`** in that same reply  
+4. Write the attempt to `admin_actions` (`denied:addping`, their ID, the command text)
+
+**Example — member runs `!addping @Friend 10`:**
+
+> 🚫 @RandomUser tried `!addping` without Admin/Mod. @aztekbeast — unauthorized access attempt.
+
+Same treatment for `!whitelist`, `!resetpings`, `!resetallpings`, `!restorehunters`, `!set` / `!settings`, and `!pingreport` (unless Professor Oak).
+
+#### Review staff abuse later
+
+```
+!pingreport @SomeoneWhoGotExtraPings
+```
+Shows `Manual !addping` count, `added_by` history, and grant/revoke log.
 
 ### Other admin commands (unchanged behavior, more logging)
 
