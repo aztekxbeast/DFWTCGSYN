@@ -1085,12 +1085,37 @@ async def helpme_cmd(ctx):
     embed.add_field(
         name="🎯 How to Earn Pokemon Hunter",
         value=(
-            "• Post **10 pings** (mention `@location` or `@OOS` in any channel)\n"
-            "• Once you hit 10, you unlock the role automatically\n"
+            "• Ping a **store role** + place (e.g. `@Target` Dallas pkwy has PB)\n"
+            "• No store role? Use `@Other` + store name in the message\n"
+            "• Trainers: **photo required** in `#open-hunting`\n"
+            "• Questions / bare store words / typed `@walmart` **do not count**\n"
+            "• Once you hit 10 counted pings, you unlock Hunter automatically\n"
             "• Use `!pings` to check your progress"
         ),
         inline=False
     )
+
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID) if ctx.guild else None
+    has_hunter = bool(hunter_role and hunter_role in ctx.author.roles)
+
+    if has_hunter or is_staff_or_oak(ctx.author):
+        embed.add_field(
+            name="📊 Restock Tracking (Hunter+)",
+            value=(
+                "`!predict <store>` — Predict next restock\n"
+                "`!predict <store> <location>` — e.g. `!predict target alliance`\n"
+                "`!rh <store>` — Recent restock dates\n"
+                "`!rh <store> <location>` — e.g. `!rh walmart beach`\n"
+                "`!rh <store> 60` — Look back 60 days"
+            ),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="📊 Restock Tracking",
+            value="Unlocks with **Pokemon Hunter** — `!predict` / `!rh`\nEarn 10 counted store pings to get the role.",
+            inline=False
+        )
 
     if is_staff_or_oak(ctx.author):
         embed.add_field(
@@ -1113,12 +1138,8 @@ async def helpme_cmd(ctx):
             inline=False
         )
         embed.add_field(
-            name="📊 Restock Tracking",
+            name="🛠️ Admin Tools",
             value=(
-                "`!predict <store>` — Predict next restock\n"
-                "`!predict <store> <location>` — e.g. `!predict target alliance`\n"
-                "`!rh <store>` — Recent restock dates\n"
-                "`!rh <store> <location>` — e.g. `!rh walmart beach`\n"
                 "`!deepbackfill` — Scan for past pings (7 days)\n"
                 "`!deepbackfill 14` — Scan last 14 days\n"
                 "`!addlocation <word>` — Add a location word\n"
@@ -1361,6 +1382,18 @@ def staff_or_oak():
         raise commands.MissingAnyRole(
             [r for r in (ADMIN_ROLE_ID, MOD_ROLE_ID, PROFESSOR_OAK_ROLE_ID) if r]
         )
+    return commands.check(predicate)
+
+
+def hunter_or_staff():
+    """Pokemon Hunter (or Admin/Mod/Prof. Oak) can use store intel commands."""
+    async def predicate(ctx):
+        hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID) if ctx.guild else None
+        if hunter_role and hunter_role in ctx.author.roles:
+            return True
+        if is_staff_or_oak(ctx.author):
+            return True
+        raise commands.CheckFailure("You need the **Pokemon Hunter** role to use this.")
     return commands.check(predicate)
 
 
@@ -2083,9 +2116,9 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
 
 
 @bot.command(name="predict")
-@commands.has_role(ADMIN_ROLE_ID)
+@hunter_or_staff()
 async def predict_cmd(ctx, *args):
-    """Analyze ping patterns and predict next restock.
+    """Analyze ping patterns and predict next restock (Pokemon Hunter+).
     Usage: !predict target
     Usage: !predict target watauga (specific location)
     Usage: !predict (shows all stores)"""
@@ -2280,8 +2313,9 @@ async def predict_cmd(ctx, *args):
 
 
 @bot.command(name="restockhistory", aliases=["rh"])
+@hunter_or_staff()
 async def restockhistory_cmd(ctx, *args):
-    """View recent ping history for a store to identify restock dates.
+    """View recent ping history for a store (Pokemon Hunter+).
     Usage: !restockhistory (all stores)
     Usage: !restockhistory target
     Usage: !restockhistory target alliance (specific location)
@@ -3113,8 +3147,10 @@ async def on_command_error(ctx, error):
                 )
             return
         await ctx.send("❌ You don't have permission to use that command.")
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send(f"❌ {error}")
     elif isinstance(error, commands.MemberNotFound):
-        await ctx.send("❌ Member not found.")
+        await ctx.send("❌ Member not found. Try `@mention`, username, or user ID.")
     else:
         await ctx.send(f"❌ Error: {error}")
 
