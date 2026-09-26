@@ -101,7 +101,7 @@ Shows that member’s full ping picture:
 
 Every lookup is logged in `admin_actions` (who checked whom).
 
-> Set **`PROFESSOR_OAK_ROLE_ID`** in the bot `.env` so the Professor Oak role can run this.
+> **Configured on Fly:** `PROFESSOR_OAK_ROLE_ID=1539123032847687730` (Professor Oak) and `AZTEK_USER_ID=638486065430265877`. Also listed in `.env.example`.
 
 ### `!syncdry` (Admin · Mod)
 
