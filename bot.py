@@ -476,7 +476,65 @@ LOCATION_WORDS = [
     "sunset", "highland", "park", "lake", "north", "south", "east", "west",
     "keller", "grapevine", "flower", "mound", "hurst", "bedford", "euless",
     "arlington", "mansfield", "cedar", "hill", "duncan", "denton",
+    # common hunt spots (so predict groups them as one place)
+    "eastchase", "east", "chase", "nrh", "saginaw", "arbrook", "alta", "mere",
+    "overton", "precinct", "macarthur", "colony", "lewisville", "irving",
+    "garland", "mesquite", "rockwall", "rowlett", "frisco", "mckinney",
+    "burleson", "crowley", "azle", "haslet", "white", "settlement", "berry",
+    "firewheel", "i30", "i20", "121", "360", "287", "183", "161",
 ]
+
+# Explicit place aliases → one canonical label
+LOCATION_ALIASES = {
+    "eastchase": ["eastchase", "east chase", "east-chase", "east chase pkwy"],
+    "alta mere": ["alta mere", "altamere", "alta", "mere"],
+    "lake worth": ["lake worth", "lakeworth", "lw"],
+    "nrh": ["nrh", "north richland", "north richland hills"],
+    "cedar hill": ["cedar hill", "cedarhill"],
+    "flower mound": ["flower mound", "flowermound"],
+    "north tarrant": ["north tarrant", "n tarrant", "n. tarrant"],
+    "white settlement": ["white settlement", "white settlment", "white"],
+}
+
+
+def canonical_location(stored_loc=None, content=None, filter_loc=None):
+    """Collapse location variants (Eastchase Magic / 17 Eastchase) into one place name."""
+    text = f"{stored_loc or ''} {content or ''}".lower()
+    flat = re.sub(r'[^a-z0-9]+', ' ', text)
+    if filter_loc:
+        fl = filter_loc.lower().strip()
+        fl_flat = re.sub(r'[^a-z0-9]+', '', fl)
+        # any mention of the requested place rolls into that one bucket
+        if fl_flat and fl_flat in re.sub(r'[^a-z0-9]+', '', flat):
+            return filter_loc.replace('-', ' ').title()
+        for canon, alts in LOCATION_ALIASES.items():
+            if fl in alts or fl_flat == re.sub(r'[^a-z0-9]+', '', canon):
+                for a in alts:
+                    if re.sub(r'[^a-z0-9]+', '', a) in re.sub(r'[^a-z0-9]+', '', flat):
+                        return canon.title()
+    # alias table
+    for canon, alts in LOCATION_ALIASES.items():
+        for a in alts:
+            if re.search(rf'\b{re.escape(a)}\b', flat):
+                return canon.title()
+    # known location words (prefer 2-word phrases like cedar hill)
+    words = flat.split()
+    if not words:
+        return "General"
+    for phrase in ("cedar hill", "lake worth", "flower mound", "white settlement", "alta mere", "east chase"):
+        if phrase in flat:
+            return phrase.title()
+    for w in words:
+        if w in LOCATION_WORDS and w not in {
+            "east", "west", "north", "south", "park", "lake", "hill", "mere", "chase", "white"
+        }:
+            return w.title()
+    # fallback: first 2 words of stored location, else General
+    s = (stored_loc or "").strip()
+    if s:
+        parts = s.split()[:2]
+        return " ".join(parts).title()
+    return "General"
 
 
 def extract_store_from_text(message):
@@ -2244,7 +2302,7 @@ async def predict_cmd(ctx, *args):
                     dt = dt.astimezone(ZoneInfo("America/Chicago"))
                 except (ValueError, TypeError):
                     continue
-                loc = stored_loc.title() if stored_loc else "General"
+                loc = canonical_location(stored_loc, content, filter_loc=location)
                 date_str = dt.strftime("%Y-%m-%d")
                 ld = location_data[loc]
                 ld["pings"] += 1
@@ -2253,6 +2311,28 @@ async def predict_cmd(ctx, *args):
                     ld["dates"].add(date_str)
                     ld["day_counts"][dt.weekday()] += 1
                     ld["hour_counts"][dt.hour] += 1
+
+            # Filtered query = one place only (Eastchase Magic + Eastchase PB → Eastchase)
+            if location and rows:
+                agg = {"dates": set(), "day_counts": defaultdict(int),
+                       "hour_counts": defaultdict(int), "gaps": [], "pings": 0,
+                       "timestamps": []}
+                for (ts, content, ping_store, stored_loc) in rows:
+                    try:
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        from zoneinfo import ZoneInfo
+                        dt = dt.astimezone(ZoneInfo("America/Chicago"))
+                    except (ValueError, TypeError):
+                        continue
+                    date_str = dt.strftime("%Y-%m-%d")
+                    agg["pings"] += 1
+                    agg["timestamps"].append(dt)
+                    if date_str not in agg["dates"]:
+                        agg["dates"].add(date_str)
+                        agg["day_counts"][dt.weekday()] += 1
+                        agg["hour_counts"][dt.hour] += 1
+                label = canonical_location(None, None, filter_loc=location)
+                location_data = {label: agg}
 
             def build_location_prediction(loc_name, ld):
                 loc_dates = sorted(ld["dates"])
