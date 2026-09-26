@@ -120,7 +120,7 @@ Prints:
 !syncdry
 ```
 
-### `!addping @user <count>` (Admin · Mod only)
+### `!addping @user <count>` (Admin only)
 
 Still staff-only. Each insert now records **who** ran it (`pings.added_by` + `admin_actions`).
 
@@ -183,3 +183,15 @@ Shows `Manual !addping` count, `added_by` history, and grant/revoke log.
 - Fly app: `pokehunt-bot-drifting-sky-3389`  
 - After deploy, new pings follow the rules above immediately.  
 - Recommended env: `AZTEK_USER_ID`, `PROFESSOR_OAK_ROLE_ID` (if not set, Oak cannot run `!pingreport`).
+
+
+### `!givehunter @user [reason]` / `!removehunter @user [reason]` (Admin only)
+
+Manually grant or revoke **Pokemon Hunter**. Logs actor + reason in `role_grant_log` and `admin_actions`.
+
+```
+!givehunter @Member verified in ticket
+!removehunter @Member fake pings — see #mod-log
+```
+
+Whitelist members cannot be removed by non-Admin.

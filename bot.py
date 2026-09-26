@@ -1101,11 +1101,13 @@ async def helpme_cmd(ctx):
                 "`!resetpings @user` — Clear a user's ping history\n"
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
-                "`!pingreport @user` — Full ping history + why pings counted\n"
+                "`!pingreport @user` — Full ping history (mention, username, or ID)\n"
                 "`!allStats` — Server-wide activity overview\n"
                 "`!sync` — Run manual access check\n"
                 "`!syncdry` — Preview who would gain/lose Hunter (no changes)\n"
-                "`!addping @user <count>` — Add pings to a user\n"
+                "`!addping @user <count>` — Add pings (Admin only)\n"
+                "`!givehunter @user [reason]` — Grant Hunter (Admin only)\n"
+                "`!removehunter @user [reason]` — Remove Hunter (Admin only)\n"
                 "`!restorehunters` — Restore Hunter role for removed users"
             ),
             inline=False
@@ -1362,15 +1364,53 @@ def staff_or_oak():
     return commands.check(predicate)
 
 
+async def resolve_member(ctx, target: str = None):
+    """Resolve @mention, user id, username, or display name to a Member."""
+    if not target or target.lower() in ("me", "self"):
+        return ctx.author
+    if ctx.message.mentions:
+        return ctx.message.mentions[0]
+    # raw snowflake
+    try:
+        uid = int(str(target).strip("<@!>"))
+        member = ctx.guild.get_member(uid) or await ctx.guild.fetch_member(uid)
+        return member
+    except (ValueError, discord.NotFound, discord.HTTPException):
+        pass
+    name = target.strip()
+    # exact username / display name / nick
+    for m in ctx.guild.members:
+        if name.lower() in (
+            (m.name or "").lower(),
+            (m.display_name or "").lower(),
+            (m.global_name or "").lower() if m.global_name else "",
+            (m.nick or "").lower() if m.nick else "",
+        ):
+            return m
+    # partial username (trenguyen85 style)
+    matches = [
+        m for m in ctx.guild.members
+        if name.lower() in (m.name or "").lower()
+        or name.lower() in (m.display_name or "").lower()
+        or (m.nick and name.lower() in m.nick.lower())
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 @bot.command(name="pingreport", aliases=["pingrep", "phistory"])
 @staff_or_oak()
-async def pingreport_cmd(ctx, target: discord.Member = None, limit: int = 15):
+async def pingreport_cmd(ctx, target: str = None, limit: int = 15):
     """Staff/Professor Oak: full ping history report for a user.
-    Usage: !pingreport @user [limit]
+    Usage: !pingreport @user | username | user-id [limit]
     Also: !pingreport me
     """
-    if not target:
-        target = ctx.author
+    member = await resolve_member(ctx, target)
+    if not member:
+        await ctx.send("❌ Could not find that user. Use `@mention`, username (e.g. `trenguyen85`), or user ID.")
+        return
+    target = member
     limit = max(5, min(limit or 15, 25))
 
     window = int(await get_setting("maintenance_window_days"))
@@ -2467,6 +2507,68 @@ async def listlocations_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="givehunter", aliases=["grantHunter", "addhunter", "huntergrant"])
+@commands.has_role(ADMIN_ROLE_ID)
+async def givehunter_cmd(ctx, member: discord.Member = None, *, reason: str = "manual grant"):
+    """Manually grant Pokemon Hunter (Admin only). Logs who granted it.
+    Usage: !givehunter @user [reason]
+    Example: !givehunter @Member verified in ticket #123
+    """
+    if not member:
+        await ctx.send("Usage: `!givehunter @user [reason]`")
+        return
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        await ctx.send("❌ Pokemon Hunter role not found.")
+        return
+    if hunter_role in member.roles:
+        await ctx.send(f"ℹ️ {member.mention} already has **Pokemon Hunter**.")
+        return
+    try:
+        await member.add_roles(hunter_role, reason=f"Manual grant by {ctx.author}: {reason}"[:500])
+    except discord.Forbidden:
+        await ctx.send("❌ I can't add that role (check role hierarchy / my permissions).")
+        return
+    await record_hunter_role_earned(member.id, f"manual:{reason}")
+    await log_role_grant(member.id, "grant", reason, "manual_give", ctx.author.id, None)
+    await log_admin_action(ctx.author.id, "givehunter", member.id, reason)
+    await ctx.send(f"✅ Granted **Pokemon Hunter** to {member.mention} by {ctx.author.mention}.\nReason: {reason}")
+
+
+@bot.command(name="removehunter", aliases=["revokeHunter", "delhunter", "hunterremove"])
+@commands.has_role(ADMIN_ROLE_ID)
+async def removehunter_cmd(ctx, member: discord.Member = None, *, reason: str = "manual revoke"):
+    """Manually remove Pokemon Hunter (Admin only). Logs who removed it.
+    Usage: !removehunter @user [reason]
+    Example: !removehunter @Member fake pings — see #mod-log
+    """
+    if not member:
+        await ctx.send("Usage: `!removehunter @user [reason]`")
+        return
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        await ctx.send("❌ Pokemon Hunter role not found.")
+        return
+    if hunter_role not in member.roles:
+        await ctx.send(f"ℹ️ {member.mention} does not have **Pokemon Hunter**.")
+        return
+    # Protect whitelist unless admin explicitly removes
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM whitelist WHERE user_id = ?", (member.id,))
+        is_wl = await cursor.fetchone() is not None
+    if is_wl and not any(r.id == ADMIN_ROLE_ID for r in ctx.author.roles):
+        await ctx.send(f"⛔ {member.mention} is **whitelisted**. Only Admin can remove them.")
+        return
+    try:
+        await member.remove_roles(hunter_role, reason=f"Manual revoke by {ctx.author}: {reason}"[:500])
+    except discord.Forbidden:
+        await ctx.send("❌ I can't remove that role (check role hierarchy / my permissions).")
+        return
+    await log_role_grant(member.id, "revoke", reason, "manual_remove", ctx.author.id, None)
+    await log_admin_action(ctx.author.id, "removehunter", member.id, reason)
+    await ctx.send(f"🔻 Removed **Pokemon Hunter** from {member.mention} by {ctx.author.mention}.\nReason: {reason}")
+
+
 @bot.command(name="restorehunters")
 @commands.has_role(ADMIN_ROLE_ID)
 async def restorehunters_cmd(ctx, *names):
@@ -2545,9 +2647,9 @@ async def assignnoobs_cmd(ctx):
 
 
 @bot.command(name="addping")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def addping_cmd(ctx, member: discord.Member = None, count: int = None):
-    """Add pings to a user's record (mods/admins only).
+    """Add pings to a user's record (Admin only).
     Usage: !addping @user <count>
     Example: !addping @Reaper120 5"""
     if not member or count is None:
