@@ -492,9 +492,56 @@ LOCATION_ALIASES = {
     "nrh": ["nrh", "north richland", "north richland hills"],
     "cedar hill": ["cedar hill", "cedarhill"],
     "flower mound": ["flower mound", "flowermound"],
-    "north tarrant": ["north tarrant", "n tarrant", "n. tarrant"],
+    "north tarrant": ["north tarrant", "n tarrant", "n. tarrant", "tarrant", "n tarrant davis", "davis"],
     "white settlement": ["white settlement", "white settlment", "white"],
+    "beach": ["beach", "n beach", "north beach", "beach st", "beach street"],
+    "alliance": ["alliance"],
+    "watauga": ["watauga"],
+    "hurst": ["hurst"],
+    "mansfield": ["mansfield"],
+    "grapevine": ["grapevine"],
+    "glade": ["glade"],
+    "overton": ["overton"],
+    "saginaw": ["saginaw"],
+    "arbrook": ["arbrook"],
+    "carroll": ["carroll"],
+    "precinct": ["precinct"],
+    "mesquite": ["mesquite"],
+    "garland": ["garland"],
+    "macarthur": ["macarthur"],
+    "colony": ["colony", "lewisville"],
 }
+
+
+def location_search_terms(location: str):
+    """Expand a filter (lw, n tarrant) into SQL LIKE terms (lake worth, lakeworth, …)."""
+    if not location:
+        return []
+    fl = location.lower().strip()
+    terms = {fl}
+    flat = re.sub(r'[^a-z0-9]+', '', fl)
+    for canon, alts in LOCATION_ALIASES.items():
+        canon_flat = re.sub(r'[^a-z0-9]+', '', canon)
+        if fl in alts or flat == canon_flat or flat in {re.sub(r'[^a-z0-9]+', '', a) for a in alts}:
+            terms.add(canon)
+            terms.update(alts)
+    return sorted(terms)
+
+
+def resolve_location_label(location: str) -> str:
+    """User filter → pretty place name (lw → Lake Worth, n tarrant → North Tarrant)."""
+    if not location:
+        return "General"
+    fl = location.lower().strip()
+    fl_flat = re.sub(r'[^a-z0-9]+', '', fl)
+    for canon, alts in LOCATION_ALIASES.items():
+        canon_flat = re.sub(r'[^a-z0-9]+', '', canon)
+        if fl == canon or fl in alts or fl_flat == canon_flat:
+            return canon.title()
+        for a in alts:
+            if fl_flat == re.sub(r'[^a-z0-9]+', '', a):
+                return canon.title()
+    return location.replace('-', ' ').title()
 
 
 def canonical_location(stored_loc=None, content=None, filter_loc=None):
@@ -502,16 +549,20 @@ def canonical_location(stored_loc=None, content=None, filter_loc=None):
     text = f"{stored_loc or ''} {content or ''}".lower()
     flat = re.sub(r'[^a-z0-9]+', ' ', text)
     if filter_loc:
+        label = resolve_location_label(filter_loc)
         fl = filter_loc.lower().strip()
         fl_flat = re.sub(r'[^a-z0-9]+', '', fl)
-        # any mention of the requested place rolls into that one bucket
+        label_flat = re.sub(r'[^a-z0-9]+', '', label)
+        # any mention of the requested place (or its aliases) rolls into that bucket
         if fl_flat and fl_flat in re.sub(r'[^a-z0-9]+', '', flat):
-            return filter_loc.replace('-', ' ').title()
-        for canon, alts in LOCATION_ALIASES.items():
-            if fl in alts or fl_flat == re.sub(r'[^a-z0-9]+', '', canon):
-                for a in alts:
-                    if re.sub(r'[^a-z0-9]+', '', a) in re.sub(r'[^a-z0-9]+', '', flat):
-                        return canon.title()
+            return label
+        if label_flat and label_flat in re.sub(r'[^a-z0-9]+', '', flat):
+            return label
+        for a in location_search_terms(filter_loc):
+            if re.sub(r'[^a-z0-9]+', '', a) in re.sub(r'[^a-z0-9]+', '', flat):
+                return label
+        if not text.strip() or text.strip() == '':
+            return label  # empty sample text + filter → the filter itself
     # alias table
     for canon, alts in LOCATION_ALIASES.items():
         for a in alts:
@@ -521,7 +572,7 @@ def canonical_location(stored_loc=None, content=None, filter_loc=None):
     words = flat.split()
     if not words:
         return "General"
-    for phrase in ("cedar hill", "lake worth", "flower mound", "white settlement", "alta mere", "east chase"):
+    for phrase in ("cedar hill", "lake worth", "flower mound", "white settlement", "alta mere", "east chase", "north tarrant"):
         if phrase in flat:
             return phrase.title()
     for w in words:
@@ -2268,10 +2319,22 @@ async def predict_cmd(ctx, *args):
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             if location:
-                cursor = await db.execute(
-                    "SELECT timestamp, message_content, store, location FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", s, f"%{location}%", f"%{location}%", ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                terms = location_search_terms(location)
+                # (store LIKE ? OR store = ?) AND (loc/content matches any alias)
+                or_clauses = " OR ".join(
+                    ["LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?"] * len(terms)
                 )
+                sql = (
+                    "SELECT timestamp, message_content, store, location FROM pings "
+                    f"WHERE (store LIKE ? OR store = ?) AND ({or_clauses}) "
+                    "AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC"
+                )
+                params = [f"%{s}%", s]
+                for t in terms:
+                    params.append(f"%{t}%")
+                    params.append(f"%{t}%")
+                params.extend([ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID])
+                cursor = await db.execute(sql, params)
             else:
                 cursor = await db.execute(
                     "SELECT timestamp, message_content, store, location FROM pings WHERE store LIKE ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
@@ -2395,22 +2458,23 @@ async def predict_cmd(ctx, *args):
                 return "\n".join(lines)
 
             if location:
-                # Show specific location prediction
-                matched_locs = []
-                for loc_name, ld in location_data.items():
-                    if location in loc_name.lower():
-                        matched_locs.append((loc_name, ld))
-
-                if not matched_locs:
-                    embed.description = f"No pings found for **{location}** at {s.title()}."
+                # Already filtered by alias terms — show the one place prediction
+                label = resolve_location_label(location)
+                if not location_data:
+                    embed.description = f"No pings found for **{label}** at {s.title()}."
                     await send_embed_safe(ctx, embed)
                     continue
 
-                for loc_name, ld in matched_locs[:12]:
+                # Prefer the aggregated label; fall back to whatever buckets we have
+                matched = [(n, ld) for n, ld in location_data.items() if n != "General"]
+                if not matched:
+                    matched = list(location_data.items())
+
+                for loc_name, ld in matched[:8]:
                     pred_text = build_location_prediction(loc_name, ld)
                     embed.add_field(name=f"📍 {loc_name}"[:256], value=pred_text[:1024], inline=False)
-                if len(matched_locs) > 12:
-                    embed.set_footer(text=f"...and {len(matched_locs)-12} more matches. Narrow the location.")
+                if len(matched) > 8:
+                    embed.set_footer(text=f"Showing top 8 of {len(matched)} groups.")
 
             else:
                 # Show all locations
@@ -2491,10 +2555,21 @@ async def restockhistory_cmd(ctx, *args):
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             if location:
-                cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
-                    (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
+                terms = location_search_terms(location)
+                or_clauses = " OR ".join(
+                    ["LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?"] * len(terms)
                 )
+                sql = (
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings "
+                    f"WHERE (store LIKE ? OR store = ?) AND ({or_clauses}) AND timestamp >= ? "
+                    "AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?"
+                )
+                params = [f"%{s}%", s]
+                for t in terms:
+                    params.append(f"%{t}%")
+                    params.append(f"%{t}%")
+                params.extend([cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT])
+                cursor = await db.execute(sql, params)
                 rows = list(reversed(await cursor.fetchall()))
                 if not rows:
                     cursor = await db.execute(
