@@ -17,6 +17,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 POKEMON_TRAINER_ROLE_ID = int(os.getenv("POKEMON_TRAINER_ROLE_ID", "0"))
 POKEMON_HUNTER_ROLE_ID = int(os.getenv("POKEMON_HUNTER_ROLE_ID", "0"))
+HUNTING_NOOB_ROLE_ID = int(os.getenv("HUNTING_NOOB_ROLE_ID", "0"))
 ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))
 MOD_ROLE_ID = int(os.getenv("MOD_ROLE_ID", "0"))
 ANNOUNCEMENTS_CHANNEL_ID = int(os.getenv("ANNOUNCEMENTS_CHANNEL_ID", "1502087476305461349"))
@@ -216,6 +217,27 @@ async def log_admin_action(actor_id, action, target_id=None, detail=None):
             (actor_id, action, target_id, detail, now_iso())
         )
         await db.commit()
+
+
+async def remove_hunting_noob(member):
+    """Remove Hunting Noob role when user earns Hunter role."""
+    noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
+    if noob_role and noob_role in member.roles:
+        try:
+            await member.remove_roles(noob_role, reason="Earned Pokemon Hunter role")
+        except discord.Forbidden:
+            pass
+
+
+async def assign_hunting_noob(member):
+    """Assign Hunting Noob role when user loses Hunter role (only if they have Pokemon Trainer role)."""
+    noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
+    trainer_role = member.guild.get_role(POKEMON_TRAINER_ROLE_ID)
+    if noob_role and noob_role not in member.roles and trainer_role and trainer_role in member.roles:
+        try:
+            await member.add_roles(noob_role, reason="Lost Pokemon Hunter role")
+        except discord.Forbidden:
+            pass
 
 
 def days_ago_iso(days):
@@ -605,6 +627,7 @@ async def check_grant_access(user_id, guild):
         await member.add_roles(hunter_role, reason="Reached ping threshold")
         await record_hunter_role_earned(user_id, "threshold")
         await log_role_grant(user_id, "grant", f"{total_pings}/{required} counted pings", "threshold", None, total_pings)
+        await remove_hunting_noob(member)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -684,6 +707,7 @@ async def check_access(user_id, guild):
             await member.add_roles(hunter_role, reason="Reached ping threshold")
             await record_hunter_role_earned(user_id, "threshold")
             await log_role_grant(user_id, "grant", f"{total_pings}/{required} counted pings", "threshold", None, total_pings)
+            await remove_hunting_noob(member)
             channel = get_announcement_channel(guild)
             if channel:
                 try:
@@ -726,6 +750,7 @@ async def on_member_join(member):
                 await member.add_roles(hunter_role, reason="MEE6 Silver+ head start")
                 await record_hunter_role_earned(member.id, "mee6_silver")
                 await log_role_grant(member.id, "grant", "MEE6 Silver+ head start", "mee6_silver")
+                await remove_hunting_noob(member)
                 channel = get_announcement_channel(member.guild)
                 if channel:
                     await channel.send(
@@ -741,6 +766,14 @@ async def on_member_join(member):
             await member.add_roles(trainer_role, reason="Auto-assign Trainer on join")
         except discord.Forbidden:
             pass
+        # Auto-assign Hunting Noob to new Trainers (unless they already have Hunter)
+        hunter_role = member.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+        noob_role = member.guild.get_role(HUNTING_NOOB_ROLE_ID)
+        if noob_role and not (hunter_role and hunter_role in member.roles):
+            try:
+                await member.add_roles(noob_role, reason="New member with Pokemon Trainer role")
+            except discord.Forbidden:
+                pass
 
 
 @bot.event
@@ -760,6 +793,7 @@ async def on_message(message):
                                 await member.add_roles(hunter_role, reason="MEE6 Gold/Diamond achievement")
                                 await record_hunter_role_earned(member.id, "mee6_gold_diamond")
                                 await log_role_grant(member.id, "grant", "MEE6 Gold/Diamond achievement", "mee6_gold_diamond")
+                                await remove_hunting_noob(member)
                                 # Post to #poke-hunter-access
                                 for ch in guild.text_channels:
                                     if ch.name == "poke-hunter-access":
@@ -798,6 +832,9 @@ async def on_message(message):
                 is_hunter = hunter_role and hunter_role in message.author.roles
                 if not is_hunter and not message.attachments:
                     counts, reject = False, "no_photo"
+            # Also skip logging entirely when open-hunting has no media (origin rule)
+            if message.channel.name == "open-hunting" and not message.attachments:
+                counts, reject = False, "no_photo"
             loc = extract_location_from_text(message.content)
             await log_ping(
                 user_id, channel_id, mention["store"], mention["role_type"],
@@ -826,8 +863,8 @@ async def on_message(message):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    """Allow Admins, Mods, and Pokemon Hunters to report fake pings with 🚩 or ❌ reaction."""
-    if str(payload.emoji) not in ("🚩", "❌"):
+    """Allow Admins and Mods to flag fake pings with ❌ reaction."""
+    if str(payload.emoji) != "❌":
         return
 
     guild = bot.get_guild(payload.guild_id)
@@ -838,9 +875,8 @@ async def on_raw_reaction_add(payload):
     if not user or user.bot:
         return
 
-    # Admins, Mods, and Pokemon Hunters can flag fake pings
-    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
-    is_authorized = is_admin_or_mod(user) or (hunter_role and hunter_role in user.roles)
+    # Only Admins and Mods can flag fake pings
+    is_authorized = is_admin_or_mod(user)
     if not is_authorized:
         return
 
@@ -881,7 +917,7 @@ async def on_raw_reaction_add(payload):
             # Record flag
             await db.execute(
                 "INSERT INTO flagged_pings (ping_id, reported_by, user_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (ping_id, user.id, author_id, "Reaction 🚩 flag", now_iso())
+                (ping_id, user.id, author_id, "Reaction ❌ flag", now_iso())
             )
             # Remove original ping from table
             await db.execute("DELETE FROM pings WHERE id = ?", (ping_id,))
@@ -897,7 +933,7 @@ async def on_raw_reaction_add(payload):
             if flag_channel:
                 try:
                     await flag_channel.send(
-                        f"🚩 **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention} in {channel.mention}. "
+                        f"❌ **Ping Flagged & Removed:** {user.mention} flagged a suspicious ping by {message.author.mention} in {channel.mention}. "
                         f"Double ping points (-2) deducted as a penalty."
                     )
                 except discord.Forbidden:
@@ -1132,6 +1168,7 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
                 await member.add_roles(hunter_role, reason="Whitelisted by admin")
                 await record_hunter_role_earned(member.id, "whitelist")
                 await log_role_grant(member.id, "grant", f"whitelisted by {ctx.author.id}", "whitelist", ctx.author.id)
+                await remove_hunting_noob(member)
             await ctx.send(f"✅ {member.mention} has been whitelisted (permanent Hunter access).")
             await log_admin_action(ctx.author.id, "whitelist_add", member.id, None)
         else:
@@ -1618,6 +1655,7 @@ async def mee6sync_cmd(ctx):
                 await member.add_roles(hunter_role, reason="MEE6 sync")
                 await record_hunter_role_earned(member.id, "mee6_sync")
                 await log_role_grant(member.id, "grant", f"MEE6 sync by {ctx.author.id}", "mee6_sync", ctx.author.id)
+                await remove_hunting_noob(member)
                 count += 1
             except discord.Forbidden:
                 pass
@@ -1706,6 +1744,7 @@ async def mee6import_cmd(ctx, level_threshold: int = None):
                 await member.add_roles(hunter_role, reason=f"MEE6 import: Level {lvl}")
                 await record_hunter_role_earned(member.id, f"mee6_import_l{lvl}")
                 await log_role_grant(member.id, "grant", f"MEE6 import level {lvl}", "mee6_import", ctx.author.id)
+                await remove_hunting_noob(member)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1859,6 +1898,7 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
                 await member.add_roles(hunter_role, reason=f"MEE6 scan: Level {level}")
                 await record_hunter_role_earned(member.id, f"mee6_scan_l{level}")
                 await log_role_grant(member.id, "grant", f"MEE6 scan level {level}", "mee6_scan", ctx.author.id)
+                await remove_hunting_noob(member)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1978,6 +2018,7 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
                 await member.add_roles(hunter_role, reason=f"Message scan: {count} messages")
                 await record_hunter_role_earned(member.id, f"message_scan_{count}")
                 await log_role_grant(member.id, "grant", f"message scan {count} msgs", "message_scan", ctx.author.id)
+                await remove_hunting_noob(member)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -2206,7 +2247,7 @@ async def restockhistory_cmd(ctx, *args):
     Usage: !restockhistory target alliance (specific location)
     Usage: !restockhistory target 60 (last 60 days)"""
     store_list = CONFIG.get("store_channels", [])
-    days = 30
+    days = 14
     store = None
     location = None
 
@@ -2248,29 +2289,34 @@ async def restockhistory_cmd(ctx, *args):
     await ctx.send(f"🔄 Loading restock history...")
     found_any = False
 
+    # Hard cap on rows pulled per store so a single busy store/location can't
+    # blow up memory or embed size. We only ever display the most recent
+    # ~15 dates anyway, so recent rows are all that matter.
+    ROW_LIMIT = 400
+
     async with aiosqlite.connect(DB_PATH) as db:
         for s in stores_to_check:
             if location:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE (store LIKE ? OR store = ?) AND (LOWER(location) LIKE ? OR LOWER(message_content) LIKE ?) AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
+                    (f"%{s}%", s, f"%{location}%", f"%{location}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
                 )
-                rows = await cursor.fetchall()
+                rows = list(reversed(await cursor.fetchall()))
                 if not rows:
                     cursor = await db.execute(
-                        "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                        (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                        "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
+                        (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
                     )
-                    rows = await cursor.fetchall()
+                    rows = list(reversed(await cursor.fetchall()))
                     location_not_found = True
                 else:
                     location_not_found = False
             else:
                 cursor = await db.execute(
-                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp ASC",
-                    (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID)
+                    "SELECT timestamp, message_content, user_id, store, location, channel_id, message_id FROM pings WHERE store LIKE ? AND timestamp >= ? AND channel_id NOT IN (?, ?) ORDER BY timestamp DESC LIMIT ?",
+                    (f"%{s}%", cutoff, ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID, ROW_LIMIT)
                 )
-                rows = await cursor.fetchall()
+                rows = list(reversed(await cursor.fetchall()))
                 location_not_found = False
 
             if not rows:
@@ -2301,44 +2347,74 @@ async def restockhistory_cmd(ctx, *args):
                 })
 
             sorted_dates = sorted(daily_data.items())
+            recent_dates = sorted_dates[-15:]
+            recent_dates.reverse()  # newest first
 
-            embed = discord.Embed(
-                title=f"Restock History — {s.title()} (last {days}d)",
-                color=discord.Color.green()
-            )
+            # Build per-date text blocks, then pack them into embed-safe chunks.
+            # This avoids blindly truncating (and losing/mangling data) once we
+            # cross Discord's 4096-char description / 6000-char total limits.
+            SAFE_DESC_LIMIT = 3500  # margin below Discord's 4096 hard cap
+            MAX_EMBEDS = 4
 
-            history_text = ""
-            for date_key, entries in sorted_dates[-15:]:
-                times = [e["time"] for e in entries]
+            blocks = []
+            for date_key, entries in recent_dates:
+                entries_rev = list(reversed(entries))  # newest pings first
+                times = [e["time"] for e in entries_rev]
                 time_range = f"{times[0]}" if len(times) == 1 else f"{times[0]} - {times[-1]}"
-                history_text += f"**{date_key}** — {len(entries)} ping(s) @ {time_range}\n"
+                block = f"**{date_key}** — {len(entries)} ping(s) @ {time_range}\n"
 
-                for e in entries[-3:]:
+                for e in entries_rev[:3]:
                     if e["content"]:
                         short = e["content"][:80].replace("\n", " ")
                         if e.get("message_id") and e.get("channel_id") and e.get("guild_id"):
                             jump_url = f"https://discord.com/channels/{e['guild_id']}/{e['channel_id']}/{e['message_id']}"
-                            history_text += f"└ [{e['time']}]({jump_url}) <@{e['user']}>: {short}\n"
+                            block += f"└ [{e['time']}]({jump_url}) <@{e['user']}>: {short}\n"
                         else:
-                            history_text += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
+                            block += f"└ `{e['time']}` <@{e['user']}>: {short}\n"
 
                 if len(entries) > 3:
-                    history_text += f"└ ...and {len(entries) - 3} more\n"
-                history_text += "\n"
+                    block += f"└ ...and {len(entries) - 3} more\n"
+                block += "\n"
+                blocks.append(block)
 
-            if len(sorted_dates) > 15:
-                history_text = f"*Showing last 15 of {len(sorted_dates)} dates*\n\n" + history_text
+            chunks = []
+            current = ""
+            for block in blocks:
+                if current and len(current) + len(block) > SAFE_DESC_LIMIT:
+                    chunks.append(current)
+                    current = block
+                else:
+                    current += block
+            if current:
+                chunks.append(current)
+            if not chunks:
+                chunks = ["No history to display."]
 
-            # Discord embed description limit is 4096 characters
-            if len(history_text) > 4096:
-                history_text = history_text[:4093] + "..."
+            total_chunks = len(chunks)
+            shown_chunks = chunks[:MAX_EMBEDS]
 
-            embed.description = history_text
-            if location_not_found and location:
-                embed.set_footer(text=f"No pings found mentioning '{location}'. Try `!rh {s}` to see all {s} pings.")
-            else:
-                embed.set_footer(text=f"Total: {len(rows)} pings across {len(daily_data)} days")
-            await ctx.send(embed=embed)
+            for idx, chunk_text in enumerate(shown_chunks):
+                title = f"Restock History — {s.title()} (last {days}d)"
+                if total_chunks > 1:
+                    title += f" [{idx + 1}/{min(total_chunks, MAX_EMBEDS)}]"
+                embed = discord.Embed(title=title, description=chunk_text, color=discord.Color.green())
+
+                if idx == len(shown_chunks) - 1:
+                    if location_not_found and location:
+                        embed.set_footer(text=f"No pings found mentioning '{location}'. Try `!rh {s}` to see all {s} pings.")
+                    else:
+                        footer = f"Total: {len(rows)} pings across {len(daily_data)} days"
+                        if len(sorted_dates) > 15:
+                            footer += f" • Showing last 15 of {len(sorted_dates)} dates"
+                        if total_chunks > MAX_EMBEDS:
+                            footer += f" • Truncated: use `!rh {s} <location>` to narrow results"
+                        embed.set_footer(text=footer)
+
+                try:
+                    await ctx.send(embed=embed)
+                except discord.HTTPException:
+                    await ctx.send(f"⚠️ Couldn't display part of the history for **{s}** (too large). Try narrowing with a location, e.g. `!rh {s} <location>`.")
+                    break
 
     if not found_any:
         await ctx.send(f"No pings found in the last {days} days.")
@@ -2424,12 +2500,48 @@ async def restorehunters_cmd(ctx, *names):
         await record_hunter_role_earned(member.id, "manual_restore")
         await log_role_grant(member.id, "grant", f"manual restore by {ctx.author.id}", "manual_restore", ctx.author.id)
         total = await count_total("pings", member.id, only_counted=True)
+        await remove_hunting_noob(member)
         restored.append(f"<@{member.id}> ({name}) — {total} pings")
 
     msg = "✅ **Restored Pokemon Hunter:**\n" + "\n".join(restored)
     if not_found:
         msg += "\n\n⚠️ **Not found (check spelling):** " + ", ".join(not_found)
     await ctx.send(msg)
+
+
+@bot.command(name="assignnoobs")
+@commands.has_role(ADMIN_ROLE_ID)
+async def assignnoobs_cmd(ctx):
+    """Assign Hunting Noob role to all Pokemon Trainer users without Hunter role."""
+    guild = ctx.guild
+    trainer_role = guild.get_role(POKEMON_TRAINER_ROLE_ID)
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    noob_role = guild.get_role(HUNTING_NOOB_ROLE_ID)
+    if not trainer_role or not hunter_role or not noob_role:
+        await ctx.send("❌ Could not find Trainer, Hunter, or Noob role.")
+        return
+
+    assigned = 0
+    skipped = 0
+    for member in guild.members:
+        if member.bot:
+            continue
+        if trainer_role not in member.roles:
+            skipped += 1
+            continue
+        if hunter_role in member.roles:
+            skipped += 1
+            continue
+        if noob_role in member.roles:
+            skipped += 1
+            continue
+        try:
+            await member.add_roles(noob_role, reason="Hunting Noob assignment for Trainers")
+            assigned += 1
+        except discord.Forbidden:
+            pass
+
+    await ctx.send(f"✅ Assigned **Hunting Noob** to {assigned} users (Pokemon Trainer role holders). Skipped {skipped}.")
 
 
 @bot.command(name="addping")
