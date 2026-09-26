@@ -1381,7 +1381,8 @@ async def set_cmd(ctx, key: str = None, value: str = None):
 @bot.command(name="sync")
 @commands.has_role(ADMIN_ROLE_ID)
 async def sync_cmd(ctx):
-    await ctx.send("🔄 Running access check on all members...")
+    await ctx.send("🔄 Re-scoring pings + access check on all members...")
+    await rescore_pings_for_official_rules()
     guild = ctx.guild
     count = 0
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1392,13 +1393,12 @@ async def sync_cmd(ctx):
             if member:
                 await check_access(user_id, guild)
                 count += 1
-    await ctx.send(f"✅ Access check complete. Processed {count} members.")
+    await ctx.send(f"✅ Access check complete (official rules). Processed {count} members.")
 
 
 async def rescore_pings_for_official_rules():
     """Re-apply current ping rules to existing rows (counts_for_grant + reject_reason)."""
     ROLE_MENTION = re.compile(r'<@&\d+>')
-    URL_RE = re.compile(r'https?://\S+')
     updated = 0
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -1435,24 +1435,12 @@ async def rescore_pings_for_official_rules():
     return updated
 
 
-@bot.command(name="rescorepings", aliases=["rescore"])
-@commands.has_role(ADMIN_ROLE_ID)
-async def rescorepings_cmd(ctx):
-    """Re-apply official ping rules to historical rows, then show new totals. No roles changed."""
-    await ctx.send("🧹 Re-scoring historical pings under official rules...")
-    n = await rescore_pings_for_official_rules()
-    async with aiosqlite.connect(DB_PATH) as db:
-        counted = (await (await db.execute("SELECT COUNT(*) FROM pings WHERE counts_for_grant = 1")).fetchone())[0]
-        total = (await (await db.execute("SELECT COUNT(*) FROM pings")).fetchone())[0]
-    await ctx.send(f"✅ Re-scored **{n}** rows. Counted: **{counted}** / {total} raw.")
-    await log_admin_action(ctx.author.id, "rescorepings", None, f"rows={n} counted={counted}")
-
-
 @bot.command(name="syncdry", aliases=["drysync", "syncpreview", "syncdryrun"])
 @commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
 async def syncdry_cmd(ctx):
     """DRY RUN: show who would gain/lose Hunter under official rules. Changes NOTHING."""
     await ctx.send("🧪 **Dry-run sync** — no roles will be changed.")
+    await rescore_pings_for_official_rules()
     guild = ctx.guild
     hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
     required = int(await get_setting("pings_to_gain"))
