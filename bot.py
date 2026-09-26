@@ -2115,6 +2115,44 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
     scan_in_progress = False
 
 
+def embed_char_count(embed: discord.Embed) -> int:
+    n = len(embed.title or "") + len(embed.description or "")
+    for f in embed.fields:
+        n += len(f.name or "") + len(f.value or "")
+    n += len((embed.footer.text if embed.footer else "") or "")
+    return n
+
+
+async def send_embed_safe(ctx, embed: discord.Embed):
+    """Send an embed, splitting fields if over Discord's 6000-char limit."""
+    if embed_char_count(embed) <= 5800 and len(embed.fields) <= 25:
+        await ctx.send(embed=embed)
+        return
+    title = embed.title or "Result"
+    color = embed.color
+    desc = embed.description or ""
+    fields = list(embed.fields)
+    footer = embed.footer.text if embed.footer else None
+
+    batch = discord.Embed(title=title, description=desc[:4000] if desc else None, color=color)
+    sent = 0
+    for field in fields:
+        name = (field.name or "")[:256]
+        value = (field.value or "")[:1024]
+        # next field would overflow this batch
+        if embed_char_count(batch) + len(name) + len(value) > 5800 or len(batch.fields) >= 25:
+            if footer and sent == 0:
+                batch.set_footer(text=footer[:2048])
+            await ctx.send(embed=batch)
+            sent += 1
+            batch = discord.Embed(title=f"{title} (cont.)", color=color)
+        batch.add_field(name=name, value=value or "\u200b", inline=bool(field.inline))
+    if batch.fields or batch.description:
+        if footer:
+            batch.set_footer(text=footer[:2048])
+        await ctx.send(embed=batch)
+
+
 @bot.command(name="predict")
 @hunter_or_staff()
 async def predict_cmd(ctx, *args):
@@ -2189,7 +2227,7 @@ async def predict_cmd(ctx, *args):
             )
             if len(rows) == 0:
                 embed.description = "No pings found."
-                await ctx.send(embed=embed)
+                await send_embed_safe(ctx, embed)
                 continue
 
             # Group pings by location
@@ -2285,12 +2323,14 @@ async def predict_cmd(ctx, *args):
 
                 if not matched_locs:
                     embed.description = f"No pings found for **{location}** at {s.title()}."
-                    await ctx.send(embed=embed)
+                    await send_embed_safe(ctx, embed)
                     continue
 
-                for loc_name, ld in matched_locs:
+                for loc_name, ld in matched_locs[:12]:
                     pred_text = build_location_prediction(loc_name, ld)
-                    embed.add_field(name=f"📍 {loc_name}", value=pred_text, inline=False)
+                    embed.add_field(name=f"📍 {loc_name}"[:256], value=pred_text[:1024], inline=False)
+                if len(matched_locs) > 12:
+                    embed.set_footer(text=f"...and {len(matched_locs)-12} more matches. Narrow the location.")
 
             else:
                 # Show all locations
@@ -2300,16 +2340,16 @@ async def predict_cmd(ctx, *args):
                 real_locs = [(n, ld) for n, ld in sorted_locs if n != "General" and len(n) <= 30]
 
                 if real_locs:
-                    for loc_name, ld in real_locs[:5]:
+                    for loc_name, ld in real_locs[:8]:
                         pred_text = build_location_prediction(loc_name, ld)
-                        embed.add_field(name=f"📍 {loc_name}", value=pred_text, inline=False)
-                    if len(real_locs) > 5:
-                        remaining = len(real_locs) - 5
+                        embed.add_field(name=f"📍 {loc_name}"[:256], value=pred_text[:1024], inline=False)
+                    if len(real_locs) > 8:
+                        remaining = len(real_locs) - 8
                         embed.set_footer(text=f"...and {remaining} more locations. Use !predict {s} <location> for details.")
                 else:
                     embed.add_field(name="No locations found", value="Pings found but no location data extracted yet.", inline=False)
 
-            await ctx.send(embed=embed)
+            await send_embed_safe(ctx, embed)
 
 
 @bot.command(name="restockhistory", aliases=["rh"])
