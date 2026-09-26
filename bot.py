@@ -27,6 +27,10 @@ MOD_CHAT_CHANNEL_ID = int(os.getenv("MOD_CHAT_CHANNEL_ID", "0"))
 PULLS_CHANNEL_ID = int(os.getenv("PULLS_CHANNEL_ID", "0"))
 SUCCESS_CHANNEL_ID = int(os.getenv("SUCCESS_CHANNEL_ID", "0"))
 MEE6_SILVER_ROLE_ID = int(os.getenv("MEE6_SILVER_ROLE_ID", "0"))
+# Owner to ping when unauthorized users try staff-only commands
+AZTEK_USER_ID = int(os.getenv("AZTEK_USER_ID", "638486065430265877"))
+# Staff review role (Professor Oak) — can run !pingreport
+PROFESSOR_OAK_ROLE_ID = int(os.getenv("PROFESSOR_OAK_ROLE_ID", "0"))
 
 DB_PATH = "data/pokehunt.db"
 
@@ -56,7 +60,12 @@ async def init_db():
                 timestamp TEXT NOT NULL,
                 message_content TEXT,
                 location TEXT,
-                message_id INTEGER
+                message_id INTEGER,
+                channel_name TEXT,
+                has_photo INTEGER DEFAULT 0,
+                counts_for_grant INTEGER DEFAULT 1,
+                reject_reason TEXT,
+                added_by INTEGER
             );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +106,26 @@ async def init_db():
             );
             CREATE TABLE IF NOT EXISTS hunter_role_earned (
                 user_id INTEGER PRIMARY KEY,
-                earned_at TEXT NOT NULL
+                earned_at TEXT NOT NULL,
+                grant_reason TEXT
+            );
+            CREATE TABLE IF NOT EXISTS admin_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                target_id INTEGER,
+                detail TEXT,
+                timestamp TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS role_grant_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT,
+                source TEXT,
+                actor_id INTEGER,
+                ping_count INTEGER,
+                timestamp TEXT NOT NULL
             );
         """)
         # Migrations for existing database schemas
@@ -118,6 +146,18 @@ async def init_db():
             await db.execute("ALTER TABLE pings ADD COLUMN message_id INTEGER")
         except Exception:
             pass  # Column already exists
+        for col_sql in (
+            "ALTER TABLE pings ADD COLUMN channel_name TEXT",
+            "ALTER TABLE pings ADD COLUMN has_photo INTEGER DEFAULT 0",
+            "ALTER TABLE pings ADD COLUMN counts_for_grant INTEGER DEFAULT 1",
+            "ALTER TABLE pings ADD COLUMN reject_reason TEXT",
+            "ALTER TABLE pings ADD COLUMN added_by INTEGER",
+            "ALTER TABLE hunter_role_earned ADD COLUMN grant_reason TEXT",
+        ):
+            try:
+                await db.execute(col_sql)
+            except Exception:
+                pass
         await db.commit()
         for key, value in CONFIG.items():
             await db.execute(
@@ -149,11 +189,31 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-async def record_hunter_role_earned(user_id):
+async def record_hunter_role_earned(user_id, reason="threshold"):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO hunter_role_earned (user_id, earned_at) VALUES (?, ?)",
-            (user_id, now_iso())
+            "INSERT OR REPLACE INTO hunter_role_earned (user_id, earned_at, grant_reason) VALUES (?, ?, ?)",
+            (user_id, now_iso(), reason)
+        )
+        await db.commit()
+
+
+async def log_role_grant(user_id, action, reason=None, source=None, actor_id=None, ping_count=None):
+    """Permanent grant/revoke audit: who got Hunter, why, and from which path."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO role_grant_log (user_id, action, reason, source, actor_id, ping_count, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, action, reason, source, actor_id, ping_count, now_iso())
+        )
+        await db.commit()
+
+
+async def log_admin_action(actor_id, action, target_id=None, detail=None):
+    """Audit trail for admin/mod commands (!addping, !whitelist, etc.)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO admin_actions (actor_id, action, target_id, detail, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (actor_id, action, target_id, detail, now_iso())
         )
         await db.commit()
 
@@ -166,6 +226,14 @@ def is_admin_or_mod(member):
     return any(r.id in (ADMIN_ROLE_ID, MOD_ROLE_ID) for r in member.roles)
 
 
+def is_staff_or_oak(member):
+    """Admin, Mod, or Professor Oak (review) can run staff report tools."""
+    allowed = {ADMIN_ROLE_ID, MOD_ROLE_ID}
+    if PROFESSOR_OAK_ROLE_ID:
+        allowed.add(PROFESSOR_OAK_ROLE_ID)
+    return any(r.id in allowed for r in member.roles)
+
+
 def get_announcement_channel(guild):
     for ch in guild.text_channels:
         if ch.name == "poke-hunter-access":
@@ -173,29 +241,85 @@ def get_announcement_channel(guild):
     return guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
 
 
-async def count_in_window(table, user_id, window_days):
+async def count_in_window(table, user_id, window_days, only_counted=False):
     cutoff = days_ago_iso(window_days)
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?",
-            (user_id, cutoff)
-        )
+        sql = f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?"
+        if only_counted and table == "pings":
+            sql += " AND counts_for_grant = 1"
+        cursor = await db.execute(sql, (user_id, cutoff))
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 
-async def count_total(table, user_id):
+async def count_total(table, user_id, only_counted=False):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE user_id = ?",
-            (user_id,)
-        )
+        sql = f"SELECT COUNT(*) FROM {table} WHERE user_id = ?"
+        if only_counted and table == "pings":
+            sql += " AND counts_for_grant = 1"
+        cursor = await db.execute(sql, (user_id,))
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 
-def extract_store_from_channel(channel_name):
-    return channel_name
+QUESTION_STARTERS = (
+    "anyone", "anybody", "has anyone", "is there", "is it", "are there",
+    "did anyone", "does anyone", "who's", "whos", "where is", "when is",
+    "what time", "how many", "why is", "can someone", "would someone",
+)
+
+
+def _strip_mentions_for_body(content):
+    c = content or ""
+    c = re.sub(r'<@!?\d+>', ' ', c)
+    c = re.sub(r'<@&\d+>', ' ', c)
+    c = re.sub(r'<a?:\w+:\d+>', ' ', c)
+    c = re.sub(r'https?://\S+', ' ', c)
+    c = re.sub(r'@(location|oos|other)\s*', ' ', c, flags=re.I)
+    return re.sub(r'\s+', ' ', c).strip()
+
+
+def validate_ping(message, store, has_store_role, has_other_tag):
+    """
+    Official rules (staff announcements):
+    - Real store role ping OR @Other + store details
+    - Meaningful body (location / stock), not chat or a pure question
+    - Unique message_id (caller enforces)
+    - Trainers in #open-hunting must include a photo
+    Returns (counts_for_grant, reject_reason)
+    """
+    content = message.content or ""
+    body = _strip_mentions_for_body(content)
+    channel_name = getattr(message.channel, "name", "") or ""
+    has_photo = bool(message.attachments)
+
+    # Official format: store role + details
+    if has_store_role:
+        # body is message text after stripping mentions/links.
+        # Short place names are OK ("Watauga", "NRH", "121") — that's the location line.
+        if not body:
+            return False, "empty_report"
+        if len(body) < 2:
+            return False, "empty_report"
+        if body.lower() in {s.lower() for s in CONFIG.get("store_channels", [])}:
+            return False, "store_name_only"
+        if body.endswith("?") and len(body) < 40:
+            return False, "question"
+        low = body.lower()
+        if any(low.startswith(q) for q in QUESTION_STARTERS) and "?" in body:
+            return False, "question"
+        if re.fullmatch(r'https?://\S+', content.strip() or ""):
+            return False, "link_only"
+        return True, None
+
+    # @Other with store spelled out + details
+    if has_other_tag and store and store != channel_name:
+        if len(body) < 12:
+            return False, "empty_report"
+        return True, None
+
+    # Everything else (bare store words, abbreviations, chat) does NOT count
+    return False, "no_store_role"
 
 
 def extract_location_from_text(content):
@@ -334,103 +458,71 @@ LOCATION_WORDS = [
 
 
 def extract_store_from_text(message):
+    """
+    Official rule: ping the STORE role (or @Other + store details).
+    Does NOT count bare store words, abbreviations, or chat mentioning stores.
+    """
     store_mentions = []
-    content_lower = message.content.lower()
+    content_lower = (message.content or "").lower()
     store_list = CONFIG.get("store_channels", [])
+    has_other_tag = bool(re.search(r'@other\b', content_lower)) or any(
+        (r.name or "").lower() == "other" for r in message.role_mentions
+    )
 
-    # Check actual role mentions
-    role_names = [r.name.lower() for r in message.role_mentions]
-    has_location_ping = "location" in role_names
-    has_oos_ping = "oos" in role_names
-
-    # Check for store-specific role mentions (e.g. @walmart, @target)
+    # 1) Real store role mentions — the official format
     store_role_pings = []
     for role in message.role_mentions:
-        role_name = role.name.lower()
-        if role_name in store_list or role_name.replace(" ", "-") in store_list:
-            store_role_pings.append(role_name)
+        role_name = (role.name or "").lower().strip()
+        key = role_name.replace(" ", "-")
+        if role_name in store_list or key in store_list:
+            store_role_pings.append(key if key in store_list else role_name)
 
-    # Also check for text-based mentions (when user can't actually ping the role)
-    if not has_location_ping and "@location" in content_lower:
-        has_location_ping = True
-    if not has_oos_ping and "@oos" in content_lower:
-        has_oos_ping = True
-
-    # Check for text-based store role mentions
-    for store in store_list:
-        text_mention = f"@{store}"
-        text_mention_space = f"@{store.replace('-', ' ')}"
-        if text_mention in content_lower or text_mention_space in content_lower:
-            if store not in store_role_pings:
-                store_role_pings.append(store)
-
-    # Check abbreviations
-    words = content_lower.split()
-    for abbr, store_channel in STORE_ABBREVIATIONS.items():
-        if abbr in words and store_channel not in store_role_pings:
-            store_role_pings.append(store_channel)
-
-    # If store roles were pinged directly, log them
     if store_role_pings:
-        ping_type = "location"
         for store in store_role_pings:
             store_mentions.append({
-                "role_type": ping_type,
+                "role_type": "location",
                 "channel": message.channel.name,
-                "store": store
+                "store": store,
+                "has_store_role": True,
+                "has_other_tag": False,
             })
         return store_mentions
 
-    if not has_location_ping and not has_oos_ping:
-        return store_mentions
-
-    ping_type = "location" if has_location_ping else "oos"
-
-    for store in store_list:
-        if store in content_lower or store.replace("-", " ") in content_lower:
-            store_mentions.append({
-                "role_type": ping_type,
-                "channel": message.channel.name,
-                "store": store
-            })
-
-    # Check abbreviations if no store matched yet
-    if not store_mentions:
-        words = content_lower.split()
-        for abbr, store_channel in STORE_ABBREVIATIONS.items():
-            if abbr in words:
+    # 2) @Other (role or text) + a known store spelled in the body
+    if has_other_tag:
+        for store in store_list:
+            spaced = store.replace("-", " ")
+            if f"@{store}" in content_lower or f"@{spaced}" in content_lower:
+                continue  # text @store alone is not enough
+            if store in content_lower or spaced in content_lower:
                 store_mentions.append({
-                    "role_type": ping_type,
+                    "role_type": "location",
                     "channel": message.channel.name,
-                    "store": store_channel
+                    "store": store,
+                    "has_store_role": False,
+                    "has_other_tag": True,
                 })
                 break
 
-    if not store_mentions and message.channel.name in store_list:
-        store_mentions.append({
-            "role_type": ping_type,
-            "channel": message.channel.name,
-            "store": message.channel.name
-        })
-
-    # If no store match but we detected a ping, log it with channel name
-    if not store_mentions:
-        store_mentions.append({
-            "role_type": ping_type,
-            "channel": message.channel.name,
-            "store": message.channel.name
-        })
-
+    # Abbreviations / bare names / @location text intentionally NOT counted
     return store_mentions
 
 
 import hashlib
 
-async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None, message_id=None):
+async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None, message_id=None,
+                   channel_name=None, has_photo=False, counts_for_grant=True, reject_reason=None, added_by=None):
     async with aiosqlite.connect(DB_PATH) as db:
+        if message_id:
+            cursor = await db.execute(
+                "SELECT id FROM pings WHERE message_id = ? AND user_id = ?", (message_id, user_id)
+            )
+            if await cursor.fetchone():
+                return None  # already logged this Discord message
         cursor = await db.execute(
-            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, channel_id, store, mention_type, now_iso(), content, location, message_id)
+            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id, channel_name, has_photo, counts_for_grant, reject_reason, added_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, channel_id, store, mention_type, now_iso(), content, location, message_id,
+             channel_name, 1 if has_photo else 0, 1 if counts_for_grant else 0, reject_reason, added_by)
         )
         ping_id = cursor.lastrowid
         await db.commit()
@@ -507,11 +599,12 @@ async def check_grant_access(user_id, guild):
     if hunter_role in member.roles:
         return
 
-    total_pings = await count_total("pings", user_id)
+    total_pings = await count_total("pings", user_id, only_counted=True)
     required = int(await get_setting("pings_to_gain"))
     if total_pings >= required:
         await member.add_roles(hunter_role, reason="Reached ping threshold")
-        await record_hunter_role_earned(user_id)
+        await record_hunter_role_earned(user_id, "threshold")
+        await log_role_grant(user_id, "grant", f"{total_pings}/{required} counted pings", "threshold", None, total_pings)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -551,8 +644,8 @@ async def check_access(user_id, guild):
             row = await cursor.fetchone()
             if not row:
                 await db.execute(
-                    "INSERT OR REPLACE INTO hunter_role_earned (user_id, earned_at) VALUES (?, ?)",
-                    (user_id, now_iso())
+                    "INSERT OR REPLACE INTO hunter_role_earned (user_id, earned_at, grant_reason) VALUES (?, ?, ?)",
+                    (user_id, now_iso(), "grace_external")
                 )
                 await db.commit()
                 return  # give them the full grace period
@@ -574,6 +667,7 @@ async def check_access(user_id, guild):
             return
 
         await member.remove_roles(hunter_role, reason="Failed activity maintenance")
+        await log_role_grant(user_id, "revoke", f"failed maintenance pings={pings} media={media_count} chat={chat_count}", "maintenance", None, pings)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -584,11 +678,12 @@ async def check_access(user_id, guild):
             except discord.Forbidden:
                 pass
     else:
-        total_pings = await count_total("pings", user_id)
+        total_pings = await count_total("pings", user_id, only_counted=True)
         required = int(await get_setting("pings_to_gain"))
         if total_pings >= required:
             await member.add_roles(hunter_role, reason="Reached ping threshold")
-            await record_hunter_role_earned(user_id)
+            await record_hunter_role_earned(user_id, "threshold")
+            await log_role_grant(user_id, "grant", f"{total_pings}/{required} counted pings", "threshold", None, total_pings)
             channel = get_announcement_channel(guild)
             if channel:
                 try:
@@ -629,7 +724,8 @@ async def on_member_join(member):
         if silver_role and hunter_role and silver_role in member.roles:
             try:
                 await member.add_roles(hunter_role, reason="MEE6 Silver+ head start")
-                await record_hunter_role_earned(member.id)
+                await record_hunter_role_earned(member.id, "mee6_silver")
+                await log_role_grant(member.id, "grant", "MEE6 Silver+ head start", "mee6_silver")
                 channel = get_announcement_channel(member.guild)
                 if channel:
                     await channel.send(
@@ -662,7 +758,8 @@ async def on_message(message):
                         if member and hunter_role not in member.roles:
                             try:
                                 await member.add_roles(hunter_role, reason="MEE6 Gold/Diamond achievement")
-                                await record_hunter_role_earned(member.id)
+                                await record_hunter_role_earned(member.id, "mee6_gold_diamond")
+                                await log_role_grant(member.id, "grant", "MEE6 Gold/Diamond achievement", "mee6_gold_diamond")
                                 # Post to #poke-hunter-access
                                 for ch in guild.text_channels:
                                     if ch.name == "poke-hunter-access":
@@ -688,9 +785,30 @@ async def on_message(message):
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
         store_mentions = extract_store_from_text(message)
         if store_mentions:
+            mention = store_mentions[0]
+            counts, reject = validate_ping(
+                message,
+                mention["store"],
+                mention.get("has_store_role", False),
+                mention.get("has_other_tag", False),
+            )
+            # Official rule: Trainers must include a photo in open-hunting
+            if counts and message.channel.name == "open-hunting":
+                hunter_role = message.guild.get_role(POKEMON_HUNTER_ROLE_ID) if message.guild else None
+                is_hunter = hunter_role and hunter_role in message.author.roles
+                if not is_hunter and not message.attachments:
+                    counts, reject = False, "no_photo"
             loc = extract_location_from_text(message.content)
-            await log_ping(user_id, channel_id, store_mentions[0]["store"], store_mentions[0]["role_type"], message.content[:500], loc, message.id)
-            await check_grant_access(user_id, message.guild)
+            await log_ping(
+                user_id, channel_id, mention["store"], mention["role_type"],
+                message.content[:500], loc, message.id,
+                channel_name=getattr(message.channel, "name", None),
+                has_photo=bool(message.attachments),
+                counts_for_grant=counts,
+                reject_reason=reject,
+            )
+            if counts:
+                await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
     media_channels = CONFIG.get("media_channels", [])
@@ -938,7 +1056,7 @@ async def helpme_cmd(ctx):
         inline=False
     )
 
-    if is_admin_or_mod(ctx.author):
+    if is_staff_or_oak(ctx.author):
         embed.add_field(
             name="🛡️ Admin Commands",
             value=(
@@ -947,8 +1065,10 @@ async def helpme_cmd(ctx):
                 "`!resetpings @user` — Clear a user's ping history\n"
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
+                "`!pingreport @user` — Full ping history + why pings counted\n"
                 "`!allStats` — Server-wide activity overview\n"
                 "`!sync` — Run manual access check\n"
+                "`!syncdry` — Preview who would gain/lose Hunter (no changes)\n"
                 "`!addping @user <count>` — Add pings to a user\n"
                 "`!restorehunters` — Restore Hunter role for removed users"
             ),
@@ -1010,11 +1130,14 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
             hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
             if hunter_role and hunter_role not in member.roles:
                 await member.add_roles(hunter_role, reason="Whitelisted by admin")
-                await record_hunter_role_earned(member.id)
+                await record_hunter_role_earned(member.id, "whitelist")
+                await log_role_grant(member.id, "grant", f"whitelisted by {ctx.author.id}", "whitelist", ctx.author.id)
             await ctx.send(f"✅ {member.mention} has been whitelisted (permanent Hunter access).")
+            await log_admin_action(ctx.author.id, "whitelist_add", member.id, None)
         else:
             await db.execute("DELETE FROM whitelist WHERE user_id = ?", (member.id,))
             await ctx.send(f"✅ {member.mention} has been removed from the whitelist.")
+            await log_admin_action(ctx.author.id, "whitelist_remove", member.id, None)
         await db.commit()
 
 
@@ -1100,6 +1223,247 @@ async def sync_cmd(ctx):
                 await check_access(user_id, guild)
                 count += 1
     await ctx.send(f"✅ Access check complete. Processed {count} members.")
+
+
+@bot.command(name="syncdry", aliases=["drysync", "syncpreview", "syncdryrun"])
+@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+async def syncdry_cmd(ctx):
+    """DRY RUN: show who would gain/lose Hunter under official rules. Changes NOTHING."""
+    await ctx.send("🧪 **Dry-run sync** — no roles will be changed.")
+    guild = ctx.guild
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    required = int(await get_setting("pings_to_gain"))
+    window = int(await get_setting("maintenance_window_days"))
+    maintain_req = int(await get_setting("pings_to_maintain"))
+    min_media = int(await get_setting("media_to_maintain"))
+    min_chat = int(await get_setting("chat_to_maintain"))
+
+    would_grant, would_revoke, would_keep, watch = [], [], [], []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT DISTINCT user_id FROM pings")
+        ping_users = [r[0] for r in await cursor.fetchall()]
+        cursor = await db.execute("SELECT user_id FROM whitelist")
+        whitelist = {r[0] for r in await cursor.fetchall()}
+        cursor = await db.execute("SELECT user_id FROM hunter_role_earned")
+        earned = {r[0] for r in await cursor.fetchall()}
+
+        user_ids = set(ping_users) | whitelist | earned
+        for user_id in user_ids:
+            member = guild.get_member(user_id)
+            if not member:
+                continue
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1",
+                (user_id,),
+            )
+            counted = (await cursor.fetchone())[0]
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1 AND timestamp >= ?",
+                (user_id, days_ago_iso(window)),
+            )
+            recent_p = (await cursor.fetchone())[0]
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM media WHERE user_id = ? AND timestamp >= ?",
+                (user_id, days_ago_iso(window)),
+            )
+            recent_m = (await cursor.fetchone())[0]
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM chat WHERE user_id = ? AND timestamp >= ?",
+                (user_id, days_ago_iso(int(await get_setting("chat_window_days")))),
+            )
+            recent_c = (await cursor.fetchone())[0]
+
+            has = bool(hunter_role and hunter_role in member.roles)
+            is_wl = user_id in whitelist
+            line = f"• {member.mention} (`{user_id}`) counted={counted}/{required} · {window}d pings={recent_p}/{maintain_req}"
+
+            if is_wl:
+                would_keep.append(f"⭐ WL {line}")
+                continue
+            if has:
+                if counted >= required:
+                    would_keep.append(f"✅ KEEP {line}")
+                elif recent_p >= maintain_req or recent_m >= min_media or recent_c >= min_chat:
+                    watch.append(f"👀 WATCH (maintain) {line} media={recent_m} chat={recent_c}")
+                else:
+                    would_revoke.append(f"🔻 WOULD REVOKE {line} media={recent_m} chat={recent_c}")
+            else:
+                if counted >= required:
+                    would_grant.append(f"🔺 WOULD GRANT {line}")
+                elif counted >= max(1, required - 3):
+                    watch.append(f"👀 NEAR ({counted}/{required}) {line}")
+
+    def chunk(items, title, empty="*(none)*"):
+        if not items:
+            return f"**{title}**\n{empty}"
+        body = "\n".join(items)
+        if len(body) > 1900:
+            body = "\n".join(items[:25]) + f"\n… (+{len(items)-25} more)"
+        return f"**{title} ({len(items)})**\n{body}"
+
+    summary = (
+        f"🧪 **Dry-run complete — 0 roles changed**\n"
+        f"Would grant: **{len(would_grant)}** · Would revoke: **{len(would_revoke)}** · "
+        f"Keep: **{len(would_keep)}** · Watch/near: **{len(watch)}**"
+    )
+    await ctx.send(summary)
+    await ctx.send(chunk(would_grant, "🔺 Would GRANT Hunter"))
+    await ctx.send(chunk(would_revoke, "🔻 Would REVOKE Hunter"))
+    await ctx.send(chunk(watch, "👀 Watch / near threshold"))
+    await ctx.send(chunk(would_keep, "✅ Would KEEP", empty="*(none in scan)*"))
+    await log_admin_action(ctx.author.id, "syncdry", None, f"grant={len(would_grant)} revoke={len(would_revoke)} keep={len(would_keep)} watch={len(watch)}")
+
+
+def staff_or_oak():
+    async def predicate(ctx):
+        if is_staff_or_oak(ctx.author):
+            return True
+        raise commands.MissingAnyRole(
+            [r for r in (ADMIN_ROLE_ID, MOD_ROLE_ID, PROFESSOR_OAK_ROLE_ID) if r]
+        )
+    return commands.check(predicate)
+
+
+@bot.command(name="pingreport", aliases=["pingrep", "phistory"])
+@staff_or_oak()
+async def pingreport_cmd(ctx, target: discord.Member = None, limit: int = 15):
+    """Staff/Professor Oak: full ping history report for a user.
+    Usage: !pingreport @user [limit]
+    Also: !pingreport me
+    """
+    if not target:
+        target = ctx.author
+    limit = max(5, min(limit or 15, 25))
+
+    window = int(await get_setting("maintenance_window_days"))
+    required = int(await get_setting("pings_to_gain"))
+    maintain_req = int(await get_setting("pings_to_maintain"))
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM pings WHERE user_id = ?", (target.id,)
+        )
+        raw_total = (await cursor.fetchone())[0]
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1",
+            (target.id,),
+        )
+        counted_total = (await cursor.fetchone())[0]
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND message_id IS NOT NULL AND counts_for_grant = 1",
+            (target.id,),
+        )
+        counted_uniqueish = (await cursor.fetchone())[0]
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND (store = 'manual' OR source = 'manual')",
+            (target.id,),
+        )
+        manual_n = (await cursor.fetchone())[0]
+        cursor = await db.execute(
+            """SELECT COALESCE(reject_reason, CASE WHEN counts_for_grant = 1 THEN 'PASS' ELSE 'unknown' END) AS r, COUNT(*) AS n
+               FROM pings WHERE user_id = ? GROUP BY r ORDER BY n DESC""",
+            (target.id,),
+        )
+        reject_break = await cursor.fetchall()
+        cursor = await db.execute(
+            "SELECT id, timestamp, store, mention_type, channel_id, channel_name, has_photo, counts_for_grant, reject_reason, message_id, message_content "
+            "FROM pings WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (target.id, limit),
+        )
+        recent = await cursor.fetchall()
+        cursor = await db.execute(
+            "SELECT user_id FROM whitelist WHERE user_id = ?", (target.id,)
+        )
+        is_wl = await cursor.fetchone() is not None
+        cursor = await db.execute(
+            "SELECT earned_at, grant_reason FROM hunter_role_earned WHERE user_id = ?",
+            (target.id,),
+        )
+        earned_row = await cursor.fetchone()
+        cursor = await db.execute(
+            "SELECT actor_id, action, detail, timestamp FROM admin_actions "
+            "WHERE target_id = ? OR (action LIKE 'addping%' AND target_id = ?) "
+            "ORDER BY timestamp DESC LIMIT 8",
+            (target.id, target.id),
+        )
+        admin_hist = await cursor.fetchall()
+        cursor = await db.execute(
+            "SELECT actor_id, action, reason, source, ping_count, timestamp FROM role_grant_log "
+            "WHERE user_id = ? ORDER BY timestamp DESC LIMIT 8",
+            (target.id,),
+        )
+        grant_hist = await cursor.fetchall()
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1 AND timestamp >= ?",
+            (target.id, days_ago_iso(window)),
+        )
+        recent_counted = (await cursor.fetchone())[0]
+
+    hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID) if ctx.guild else None
+    has_hunter = bool(hunter_role and hunter_role in target.roles)
+
+    embed = discord.Embed(
+        title=f"Ping report — {target.display_name}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="Hunter", value="✅ Yes" if has_hunter else "❌ No", inline=True)
+    embed.add_field(name="Whitelist", value="✅" if is_wl else "—", inline=True)
+    embed.add_field(
+        name="Earned",
+        value=(f"{earned_row[1] or '?'}\n{earned_row[0][:10]}" if earned_row else "—"),
+        inline=True,
+    )
+    embed.add_field(name="Raw rows", value=str(raw_total), inline=True)
+    embed.add_field(name="Counted (official)", value=f"**{counted_total}** / {required}", inline=True)
+    embed.add_field(name=f"Counted ({window}d)", value=f"{recent_counted} / {maintain_req} to keep", inline=True)
+    embed.add_field(name="Manual !addping", value=str(manual_n), inline=True)
+    embed.add_field(name="User ID", value=str(target.id), inline=True)
+
+    if reject_break:
+        embed.add_field(
+            name="Score breakdown",
+            value="\n".join(f"• `{r}`: {n}" for r, n in reject_break[:8]),
+            inline=False,
+        )
+
+    if recent:
+        lines = []
+        for row in recent:
+            (
+                _id, ts, store, mtype, ch_id, ch_name, has_photo, counts, reject, msg_id, content,
+            ) = row
+            flag = "✅" if counts else f"❌ {reject or ''}"
+            photo = "📷" if has_photo else ""
+            link = ""
+            if msg_id and ch_id and ctx.guild:
+                link = f" [jump](https://discord.com/channels/{ctx.guild.id}/{ch_id}/{msg_id})"
+            snippet = (content or "Manually added ping").replace("\n", " ")[:70]
+            lines.append(
+                f"`{ts[:16].replace('T',' ')}` {flag} {photo} **{store or '?'}**/{mtype or '?'}"
+                f"{' #' + (ch_name or '') if ch_name else ''}{link}\n{snippet}"
+            )
+        embed.add_field(name=f"Last {len(recent)} pings", value="\n".join(lines)[:1020], inline=False)
+
+    if grant_hist:
+        glines = [
+            f"• `{g[5][:16]}` **{g[1]}** · {g[3] or g[2] or ''} · actor {g[0] or 'bot'}"
+            for g in grant_hist
+        ]
+        embed.add_field(name="Grant/revoke log", value="\n".join(glines)[:1020], inline=False)
+
+    if admin_hist:
+        alines = [
+            f"• `{a[3][:16]}` {a[1]} · by {a[0]} · {a[2] or ''}"
+            for a in admin_hist
+        ]
+        embed.add_field(name="Admin actions (targeted)", value="\n".join(alines)[:1020], inline=False)
+
+    embed.set_footer(text=f"Requested by {ctx.author} · only counted pings earn Hunter")
+    await ctx.send(embed=embed)
+    await log_admin_action(ctx.author.id, "pingreport", target.id, f"limit={limit}")
 
 
 @bot.command(name="stats")
@@ -1252,7 +1616,8 @@ async def mee6sync_cmd(ctx):
         if silver_role in member.roles and hunter_role not in member.roles:
             try:
                 await member.add_roles(hunter_role, reason="MEE6 sync")
-                await record_hunter_role_earned(member.id)
+                await record_hunter_role_earned(member.id, "mee6_sync")
+                await log_role_grant(member.id, "grant", f"MEE6 sync by {ctx.author.id}", "mee6_sync", ctx.author.id)
                 count += 1
             except discord.Forbidden:
                 pass
@@ -1339,7 +1704,8 @@ async def mee6import_cmd(ctx, level_threshold: int = None):
         if lvl >= level_threshold:
             try:
                 await member.add_roles(hunter_role, reason=f"MEE6 import: Level {lvl}")
-                await record_hunter_role_earned(member.id)
+                await record_hunter_role_earned(member.id, f"mee6_import_l{lvl}")
+                await log_role_grant(member.id, "grant", f"MEE6 import level {lvl}", "mee6_import", ctx.author.id)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1491,7 +1857,8 @@ async def mee6scan_cmd(ctx, level_threshold: int = None):
         if level >= level_threshold:
             try:
                 await member.add_roles(hunter_role, reason=f"MEE6 scan: Level {level}")
-                await record_hunter_role_earned(member.id)
+                await record_hunter_role_earned(member.id, f"mee6_scan_l{level}")
+                await log_role_grant(member.id, "grant", f"MEE6 scan level {level}", "mee6_scan", ctx.author.id)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -1609,7 +1976,8 @@ async def messagescan_cmd(ctx, msg_threshold: int = None):
         if count >= msg_threshold:
             try:
                 await member.add_roles(hunter_role, reason=f"Message scan: {count} messages")
-                await record_hunter_role_earned(member.id)
+                await record_hunter_role_earned(member.id, f"message_scan_{count}")
+                await log_role_grant(member.id, "grant", f"message scan {count} msgs", "message_scan", ctx.author.id)
                 granted += 1
             except discord.Forbidden:
                 pass
@@ -2053,8 +2421,9 @@ async def restorehunters_cmd(ctx, *names):
             continue
         if hunter_role not in member.roles:
             await member.add_roles(hunter_role, reason="Manual restore by admin")
-        await record_hunter_role_earned(member.id)
-        total = await count_total("pings", member.id)
+        await record_hunter_role_earned(member.id, "manual_restore")
+        await log_role_grant(member.id, "grant", f"manual restore by {ctx.author.id}", "manual_restore", ctx.author.id)
+        total = await count_total("pings", member.id, only_counted=True)
         restored.append(f"<@{member.id}> ({name}) — {total} pings")
 
     msg = "✅ **Restored Pokemon Hunter:**\n" + "\n".join(restored)
@@ -2066,7 +2435,7 @@ async def restorehunters_cmd(ctx, *names):
 @bot.command(name="addping")
 @commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
 async def addping_cmd(ctx, member: discord.Member = None, count: int = None):
-    """Add pings to a user's record (mods/admins).
+    """Add pings to a user's record (mods/admins only).
     Usage: !addping @user <count>
     Example: !addping @Reaper120 5"""
     if not member or count is None:
@@ -2083,14 +2452,18 @@ async def addping_cmd(ctx, member: discord.Member = None, count: int = None):
     async with aiosqlite.connect(DB_PATH) as db:
         for _ in range(count):
             await db.execute(
-                "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (member.id, ctx.channel.id, "manual", "manual", now, "Manually added ping", None, None)
+                "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id, channel_name, has_photo, counts_for_grant, reject_reason, added_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (member.id, ctx.channel.id, "manual", "manual", now, "Manually added ping", None, None,
+                 getattr(ctx.channel, "name", None), 0, 1, None, ctx.author.id)
             )
         await db.commit()
 
-    total = await count_total("pings", member.id)
-    await ctx.send(f"✅ Added **{count}** ping(s) to {member.mention}. New total: **{total}**.")
-    # Auto-grant the Hunter role if they now meet the threshold
+    await log_admin_action(ctx.author.id, "addping", member.id, f"count={count} channel={ctx.channel.id}")
+    total = await count_total("pings", member.id, only_counted=True)
+    await ctx.send(
+        f"✅ Added **{count}** ping(s) to {member.mention} (by {ctx.author.mention}). "
+        f"Counted total: **{total}**."
+    )
     await check_grant_access(member.id, ctx.guild)
 
 
@@ -2503,7 +2876,28 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingRole):
+    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory")
+    cmd_name = ctx.command.qualified_name if ctx.command else ""
+
+    if isinstance(error, (commands.MissingRole, commands.MissingAnyRole)):
+        if cmd_name in unauthorized_cmds or isinstance(error, (commands.MissingRole, commands.MissingAnyRole)):
+            await log_admin_action(
+                ctx.author.id, f"denied:{cmd_name}", None,
+                f"tried {ctx.message.content[:200]}"
+            )
+            # Reply to the attempt (same message tags offender + @aztekbeast for the audit log)
+            try:
+                await ctx.message.reply(
+                    f"🚫 {ctx.author.mention} tried `!{cmd_name}` without Admin/Mod. "
+                    f"<@{AZTEK_USER_ID}> — unauthorized access attempt.",
+                    mention_author=True,
+                )
+            except discord.HTTPException:
+                await ctx.send(
+                    f"🚫 {ctx.author.mention} tried `!{cmd_name}` without Admin/Mod. "
+                    f"<@{AZTEK_USER_ID}> — unauthorized access attempt."
+                )
+            return
         await ctx.send("❌ You don't have permission to use that command.")
     elif isinstance(error, commands.MemberNotFound):
         await ctx.send("❌ Member not found.")

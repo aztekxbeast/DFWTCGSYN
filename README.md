@@ -227,12 +227,67 @@ All settings stored in `config.json` and adjustable at runtime via `!set`:
 
 ---
 
+## Desktop GUI (PokeHunt Controller)
+
+A native macOS app to start/stop the bot, view live logs and stats, and manage settings — without retyping Discord credentials every time.
+
+### Why you won't re-login
+
+Discord **bot tokens do not expire** unless you reset them in the Developer Portal. The controller saves your token **once** to:
+
+1. **macOS Keychain** (`pokehunt-discord-bot`)
+2. `~/.config/pokehunt/credentials.json` (mode 600)
+3. Project `.env` (so `python bot.py` still works)
+
+Every later launch loads them automatically. You only re-enter a token if you click **Reset saved login** or revoke it in Discord.
+
+### Run from an icon
+
+```bash
+# One-time setup (already done if .venv exists)
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-gui.txt
+bash scripts/build_app.sh
+open PokeHunt.app
+# Optional: drag to Applications
+cp -R PokeHunt.app ~/Applications/
+```
+
+Double-click **PokeHunt.app** (or `Open PokeHunt.command` in the project folder).
+
+### First run
+
+1. Open the app → it lands on **Connect Discord** (guided wizard)
+2. Click **Open Developer Portal**, create an app, copy the **Bot Token**
+3. Paste the token, check it, copy **Server ID**, **Save & finish**
+4. Optional one-click **invite link** once you paste Application ID
+5. **Dashboard → Start Bot**
+
+Not a Discord developer? The wizard walks you through every click. Advanced users can use **Skip to advanced form** on the Credentials page.
+
+### Pages
+
+| Page | What it does |
+|------|----------------|
+| Dashboard | Start/Stop/Restart, live status, ping/hunter/media/chat stats |
+| Logs | Live bot stdout/stderr stream |
+| Settings | Edit `config.json` thresholds and role names |
+| Credentials | Token + guild/role/channel IDs, validate, reset |
+
+### Requirements
+
+- macOS 11+
+- Python 3.10+ on PATH (used to create `.venv`)
+
+---
+
 ## Tech Stack
 
 - **Language:** Python 3.14
 - **Library:** discord.py 2.x
 - **Database:** SQLite (auto-created, stored on Fly.io volume)
 - **Hosting:** Fly.io (auto-deployed from GitHub)
+- **Desktop GUI:** CustomTkinter + macOS Keychain (`gui/`, `PokeHunt.app`)
 
 ---
 
