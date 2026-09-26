@@ -2402,6 +2402,7 @@ async def predict_cmd(ctx, *args):
                 lines = []
                 ping_count = ld["pings"]
                 date_count = len(loc_dates)
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
                 if date_count >= 2:
                     loc_gaps = []
@@ -2411,50 +2412,67 @@ async def predict_cmd(ctx, *args):
                         loc_gaps.append((d2 - d1).days)
                     avg_gap = sum(loc_gaps) / len(loc_gaps)
                     gap_std = (sum((g - avg_gap) ** 2 for g in loc_gaps) / len(loc_gaps)) ** 0.5 if len(loc_gaps) > 1 else avg_gap
-
-                    if gap_std < 1.5:
-                        confidence = "High"
-                        conf_pct = min(95, 70 + int((1.5 - gap_std) * 15))
-                    elif gap_std < 3:
-                        confidence = "Medium"
-                        conf_pct = min(70, 40 + int((3 - gap_std) * 10))
-                    else:
-                        confidence = "Low"
-                        conf_pct = max(15, 40 - int(gap_std * 5))
-
                     last_dt = datetime.strptime(loc_dates[-1], "%Y-%m-%d")
-                    next_dt = last_dt + timedelta(days=round(avg_gap))
-                    days_until = (next_dt - datetime.now()).days
+                    days_since_last = (today - last_dt).days
+                    next_dt = last_dt + timedelta(days=max(1, round(avg_gap)))
+                    days_until = (next_dt - today).days
 
-                    if days_until <= 0:
-                        prediction = "⚡ **Possible restock NOW**"
+                    # Confidence: need several gaps AND a stable cycle (not daily chat)
+                    cv = (gap_std / avg_gap) if avg_gap > 0 else 2.0
+                    if date_count >= 8 and len(loc_gaps) >= 6 and avg_gap >= 2 and cv < 0.45:
+                        confidence, conf_pct = "High", 78
+                    elif date_count >= 5 and len(loc_gaps) >= 3 and avg_gap >= 1.5 and cv < 0.8:
+                        confidence, conf_pct = "Medium", 52
+                    else:
+                        confidence, conf_pct = "Low", 22
+
+                    # Never scream "NOW" just because a short cycle is overdue
+                    if days_since_last == 0:
+                        prediction = "🟢 **Activity today** — watch for updates"
+                    elif days_since_last == 1:
+                        prediction = "👀 **Active yesterday** — possible today/tomorrow"
+                    elif avg_gap < 2 and days_since_last >= 1:
+                        # chatter-heavy store (many pings, short gaps) — not a restock clock
+                        prediction = "📊 **Frequent activity** — no clear restock cycle"
+                        confidence, conf_pct = "Low", 15
+                    elif days_until <= 0 and days_since_last <= 4:
+                        prediction = f"⏰ **Possible in next 1–2 days** (was due {next_dt.strftime('%a %b %d')})"
+                    elif days_until <= 0:
+                        prediction = f"⏳ **Overdue** — last activity {days_since_last}d ago; likely soon"
                     elif days_until <= 2:
-                        prediction = f"⏰ Likely in **{days_until} day(s)** ({next_dt.strftime('%A')})"
+                        prediction = f"⏰ **Possible ~{next_dt.strftime('%A, %b %d')}** ({days_until}d)"
                     else:
                         prediction = f"📅 **{next_dt.strftime('%A, %b %d')}** (~{days_until}d)"
 
                     lines.append(f"Prediction: {prediction}")
                     lines.append(f"Avg cycle: **{avg_gap:.1f} days** (±{gap_std:.1f})")
+                    lines.append(f"Last activity: **{loc_dates[-1]}** ({days_since_last}d ago)" if days_since_last else f"Last activity: **{loc_dates[-1]}** (today)")
                 else:
                     avg_gap = 7
                     confidence = "Low"
-                    conf_pct = 15
+                    conf_pct = 12
                     lines.append(f"Prediction: Need more data ({date_count} date(s))")
 
                 if ld["day_counts"]:
                     top_day_idx = max(ld["day_counts"], key=ld["day_counts"].get)
                     top_day = DAY_NAMES[top_day_idx]
                     day_pct = round(ld["day_counts"][top_day_idx] / date_count * 100) if date_count else 0
-                    lines.append(f"Best day: **{top_day}** ({day_pct}%)")
+                    if day_pct >= 35:
+                        lines.append(f"Best day: **{top_day}** ({day_pct}%)")
+                    else:
+                        lines.append(f"Most common day: **{top_day}** ({day_pct}% — not strong)")
 
                 if ld["hour_counts"]:
                     top_hour = max(ld["hour_counts"], key=ld["hour_counts"].get)
                     hour_pct = round(ld["hour_counts"][top_hour] / date_count * 100) if date_count else 0
                     hour_end = (top_hour + 3) % 24
-                    lines.append(f"Best window: **{top_hour}:00-{hour_end}:00** ({hour_pct}%)")
+                    if hour_pct >= 30:
+                        lines.append(f"Best window: **{top_hour}:00-{hour_end}:00** ({hour_pct}%)")
 
                 lines.append(f"Confidence: **{confidence}** ({conf_pct}%)")
                 lines.append(f"Data: {ping_count} pings across {date_count} days")
+                if confidence == "Low":
+                    lines.append("_Estimate only — sparse/noisy history. Use `!rh` for actual dates._")
                 return "\n".join(lines)
 
             if location:
