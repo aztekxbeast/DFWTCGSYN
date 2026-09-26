@@ -787,7 +787,8 @@ async def check_access(user_id, guild):
                 return
 
         window = int(await get_setting("maintenance_window_days"))
-        pings = await count_in_window("pings", user_id, window)
+        # Official rules: only counted pings (store role / @Other + report) satisfy maintain
+        pings = await count_in_window("pings", user_id, window, only_counted=True)
         media_count = await count_in_window("media", user_id, window)
         chat_count = await count_in_window("chat", user_id, int(await get_setting("chat_window_days")))
 
@@ -1082,7 +1083,7 @@ async def before_daily_maintenance():
 async def pings_cmd(ctx, member: discord.Member = None):
     target = member or ctx.author
     window = int(await get_setting("maintenance_window_days"))
-    count = await count_in_window("pings", target.id, window)
+    count = await count_in_window("pings", target.id, window, only_counted=True)
     embed = discord.Embed(
         title="Ping Count",
         description=f"**{target.display_name}** has **{count}** pings in the last {window} days.",
@@ -1141,7 +1142,7 @@ async def mylevel_cmd(ctx):
     user = ctx.author
     total = await count_total("pings", user.id)
     window = int(await get_setting("maintenance_window_days"))
-    recent = await count_in_window("pings", user.id, window)
+    recent = await count_in_window("pings", user.id, window, only_counted=True)
     media_count = await count_in_window("media", user.id, window)
     chat_count = await count_in_window("chat", user.id, int(await get_setting("chat_window_days")))
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
@@ -1392,6 +1393,59 @@ async def sync_cmd(ctx):
                 await check_access(user_id, guild)
                 count += 1
     await ctx.send(f"✅ Access check complete. Processed {count} members.")
+
+
+async def rescore_pings_for_official_rules():
+    """Re-apply current ping rules to existing rows (counts_for_grant + reject_reason)."""
+    ROLE_MENTION = re.compile(r'<@&\d+>')
+    URL_RE = re.compile(r'https?://\S+')
+    updated = 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, message_content, store, source FROM pings"
+        )
+        rows = await cursor.fetchall()
+        for pid, content, store, source in rows:
+            if store == "manual" or (source or "") == "manual":
+                counts, reject = True, None
+            else:
+                text = content or ""
+                has_role = bool(ROLE_MENTION.search(text))
+                has_other = bool(re.search(r'@other\b', text.lower()))
+                body = _strip_mentions_for_body(text)
+                if has_role:
+                    if not body or len(body) < 2:
+                        counts, reject = False, "empty_report"
+                    elif body.lower().replace(" ", "-") in {s.lower() for s in CONFIG.get("store_channels", [])}:
+                        counts, reject = False, "store_name_only"
+                    elif body.endswith("?") and len(body) < 40:
+                        counts, reject = False, "question"
+                    else:
+                        counts, reject = True, None
+                elif has_other and len(body) >= 8:
+                    counts, reject = True, None
+                else:
+                    counts, reject = False, "no_store_role"
+            await db.execute(
+                "UPDATE pings SET counts_for_grant = ?, reject_reason = ? WHERE id = ?",
+                (1 if counts else 0, reject, pid),
+            )
+            updated += 1
+        await db.commit()
+    return updated
+
+
+@bot.command(name="rescorepings", aliases=["rescore"])
+@commands.has_role(ADMIN_ROLE_ID)
+async def rescorepings_cmd(ctx):
+    """Re-apply official ping rules to historical rows, then show new totals. No roles changed."""
+    await ctx.send("🧹 Re-scoring historical pings under official rules...")
+    n = await rescore_pings_for_official_rules()
+    async with aiosqlite.connect(DB_PATH) as db:
+        counted = (await (await db.execute("SELECT COUNT(*) FROM pings WHERE counts_for_grant = 1")).fetchone())[0]
+        total = (await (await db.execute("SELECT COUNT(*) FROM pings")).fetchone())[0]
+    await ctx.send(f"✅ Re-scored **{n}** rows. Counted: **{counted}** / {total} raw.")
+    await log_admin_action(ctx.author.id, "rescorepings", None, f"rows={n} counted={counted}")
 
 
 @bot.command(name="syncdry", aliases=["drysync", "syncpreview", "syncdryrun"])
@@ -1695,7 +1749,7 @@ async def stats_cmd(ctx, target: discord.Member = None):
 
     window = int(await get_setting("maintenance_window_days"))
     total_pings = await count_total("pings", target.id)
-    recent_pings = await count_in_window("pings", target.id, window)
+    recent_pings = await count_in_window("pings", target.id, window, only_counted=True)
     media_count = await count_in_window("media", target.id, window)
     chat_count = await count_in_window("chat", target.id, int(await get_setting("chat_window_days")))
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
