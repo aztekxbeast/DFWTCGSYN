@@ -33,7 +33,7 @@ AZTEK_USER_ID = int(os.getenv("AZTEK_USER_ID", "638486065430265877"))
 # Rules acknowledgment (check mark on rules message) → Trainer + Hunting Noob
 # Official #rules-and-guidelines post (Sapphire "Rules of the Discord")
 RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "1496203694994227313"))
-RULES_MESSAGE_ID = int(os.getenv("RULES_MESSAGE_ID", "1542167722752876704"))
+RULES_MESSAGE_ID = int(os.getenv("RULES_MESSAGE_ID", "1514825112598089799"))
 # Staff review role (Professor Oak) — can run !pingreport
 PROFESSOR_OAK_ROLE_ID = int(os.getenv("PROFESSOR_OAK_ROLE_ID", "0"))
 
