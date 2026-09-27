@@ -1,12 +1,35 @@
 # Changelog — PokeHunt Bot
 
-**Updated:** 2026-09-26 · **Live on Fly** `pokehunt-bot-drifting-sky-3389` · **GitHub** `aztekxbeast/DFWTCGSYN` @ `main`
+**Updated:** 2026-09-27 · **Live on Fly** `pokehunt-bot-drifting-sky-3389` · **GitHub** `aztekxbeast/DFWTCGSYN` @ `main`
 
-**No Hunter roles were auto-changed by these deploys.** Use `!syncdry` then `!sync` when you’re ready.
+**2026-09-27 deploy:** `ed0a2fc` + `150fafb` live on Fly (machine `87475e6c644998`, iad). No Hunter roles auto-changed. After review run `!syncdry` then `!sync` to re-score history.
 
 ---
 
-## Summary
+## 2026-09-27 — Ticket fixes (pings not counting) + rules → Hunting Noob
+
+| Area | Change |
+|---|---|
+| Rules ack | ✅ on official rules post → **Pokemon Trainer** + **Hunting Noob** (until Hunter) |
+| Rules bind | Pinned `#rules-and-guidelines` `1496203694994227313` / msg `1542167722752876704` · `!setrules` |
+| Ping match | Store roles match by normalized name (`BestBuy` / `Best Buy` / `best-buy`) |
+| Photo pings | Store role **+ photo** counts even with no caption (was `empty_report`) |
+| `#open-hunting` photo | Required for **Trainers only** (Hunters may text-report) |
+| Hunting Noob | Removed on every Hunter grant (incl. `!givehunter`) · restored by `!removehunter` |
+| `!status` / `!mylevel` | Uses **counted** pings for eligibility · never tells members to run admin `!sync` · auto-grants when eligible |
+| `!sync` rescore | Fixed crash selecting missing `pings.source` column |
+| Repo | GUI controller, icons, scripts included in git |
+
+### Still required on Fly (not in secrets yet)
+
+`HUNTING_NOOB_ROLE_ID` — without it rules check mark cannot assign Hunting Noob.  
+Optional explicit: `RULES_CHANNEL_ID=1496203694994227313`, `RULES_MESSAGE_ID=1542167722752876704` (also hardcoded in `bot.py`).
+
+**Discord perms (manual):** `#open-hunting` → **Hunting Noob** → View + Send Messages (+ Attach Files).
+
+---
+
+## Prior summary (official ping rules)
 
 | Area | Change |
 |---|---|
@@ -24,11 +47,10 @@
 | ✅ Counts | ❌ Does not |
 |---|---|
 | Real **store role** + place/stock (`@Target` Watauga …) | Typed `@walmart` **without** selecting the role |
-| `@Other` + store name + details | `@location` / `@OOS` alone, no store |
-| Store role + short place (`@Target` NRH) | Bare `Target` / `Costco` / `pc` / `bb` in chat |
-| | Questions (“Target?”, “Anyone at BB?”) |
-| | Product URL spam only |
-| | Same message logged twice (backfill) |
+| Store role **+ photo** (even no caption) | `@location` / `@OOS` alone, no store |
+| `@Other` + store name + details (or photo) | Bare `Target` / `Costco` / `pc` / `bb` in chat |
+| Store role + short place (`@Target` NRH) | Questions (“Target?”, “Anyone at BB?”) |
+| Hunter text report in `#open-hunting` | Product URL spam only |
 | | Trainer in `#open-hunting` **without photo** |
 
 ### Examples that count
@@ -37,16 +59,19 @@
 @Walmart Watauga <@&OOS>
 @Other  — Costco Overton has 5-pack tins
 @Target NRH
+@BestBuy Midway & 635 + photo
+@Target + shelf photo (no caption)
 ```
-Trainer in `#open-hunting`: **include a photo**.
+Trainer in `#open-hunting`: **include a photo**. Hunters: text is OK.
 
 ### Examples that do not
 ```
 Anyone at target?
 Target
 Costco
-@walmart
+@walmart          ← typed text, not a role ping
 https://www.target.com/p/pokemon-...
+I'm 47 at alliance Costco
 ```
 
 **`lw` = Lake Worth** (and similar aliases work in `!predict` / `!rh`).
