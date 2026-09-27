@@ -30,6 +30,10 @@ SUCCESS_CHANNEL_ID = int(os.getenv("SUCCESS_CHANNEL_ID", "0"))
 MEE6_SILVER_ROLE_ID = int(os.getenv("MEE6_SILVER_ROLE_ID", "0"))
 # Owner to ping when unauthorized users try staff-only commands
 AZTEK_USER_ID = int(os.getenv("AZTEK_USER_ID", "638486065430265877"))
+# Rules acknowledgment (check mark on rules message) → Trainer + Hunting Noob
+# Official #rules-and-guidelines post (Sapphire "Rules of the Discord")
+RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "1496203694994227313"))
+RULES_MESSAGE_ID = int(os.getenv("RULES_MESSAGE_ID", "1542167722752876704"))
 # Staff review role (Professor Oak) — can run !pingreport
 PROFESSOR_OAK_ROLE_ID = int(os.getenv("PROFESSOR_OAK_ROLE_ID", "0"))
 
@@ -240,6 +244,139 @@ async def assign_hunting_noob(member):
             pass
 
 
+async def assign_rules_ack_roles(member) -> bool:
+    """
+    Rules check mark on the official rules message → Pokemon Trainer + Hunting Noob.
+    Hunting Noob stays until the user earns Pokemon Hunter.
+    Returns True if any role was newly assigned.
+    """
+    guild = member.guild
+    trainer_role = guild.get_role(POKEMON_TRAINER_ROLE_ID)
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    noob_role = guild.get_role(HUNTING_NOOB_ROLE_ID)
+    assigned = False
+
+    if trainer_role and trainer_role not in member.roles:
+        try:
+            await member.add_roles(trainer_role, reason="Rules acknowledged (check mark)")
+            assigned = True
+        except discord.Forbidden:
+            pass
+
+    # Hunting Noob until Pokemon Hunter
+    if noob_role and noob_role not in member.roles and not (hunter_role and hunter_role in member.roles):
+        try:
+            await member.add_roles(noob_role, reason="Rules acknowledged (check mark)")
+            assigned = True
+        except discord.Forbidden:
+            pass
+    return assigned
+
+
+RULES_ACK_EMOJIS = {"✅", "☑️", "☑", "✔️", "✔", "white_check_mark", "heavy_check_mark", "ballot_box_with_check"}
+
+
+def is_rules_ack_emoji(emoji) -> bool:
+    name = getattr(emoji, "name", None) or str(emoji)
+    return name in RULES_ACK_EMOJIS or str(emoji) in RULES_ACK_EMOJIS
+
+
+# Distinctive text from the official Sapphire rules post in #rules-and-guidelines
+RULES_MESSAGE_SIGNATURES = (
+    "rules of the discord",
+    "clicking the check mark",
+    "clicking the checkmark",
+    "pokemon trainer role",
+)
+
+_rules_msg_cache = {}  # guild_id -> (message_id, channel_id)
+
+
+def _is_official_rules_message(msg) -> bool:
+    low = (msg.content or "").lower()
+    # Must be the real rules post (title + check-mark instruction)
+    return (
+        ("rules of the discord" in low or "rules and guidelines" in low)
+        and ("check mark" in low or "checkmark" in low)
+    )
+
+
+async def resolve_rules_message(guild):
+    """
+    Bind to the official rules message in #rules-and-guidelines.
+    Priority: env IDs → settings table → discover Sapphire's rules post → persist.
+    Returns (message_id, channel_id) or (None, None).
+    """
+    if RULES_MESSAGE_ID:
+        return RULES_MESSAGE_ID, RULES_CHANNEL_ID or None
+
+    # Cached in-process
+    cached = _rules_msg_cache.get(guild.id)
+    if cached and cached[0]:
+        return cached
+
+    # Previously resolved & saved (survives restarts)
+    saved_msg = await get_setting("rules_message_id")
+    saved_ch = await get_setting("rules_channel_id")
+    if saved_msg and str(saved_msg) not in ("0", "", "None"):
+        try:
+            result = (int(saved_msg), int(saved_ch) if saved_ch else None)
+            _rules_msg_cache[guild.id] = result
+            return result
+        except (TypeError, ValueError):
+            pass
+
+    channel = None
+    if RULES_CHANNEL_ID:
+        channel = guild.get_channel(RULES_CHANNEL_ID)
+    if not channel:
+        rules_name = await get_setting("rules_channel_name") or CONFIG.get("rules_channel_name", "rules-and-guidelines")
+        channel = discord.utils.get(guild.text_channels, name=rules_name)
+    if not channel:
+        return None, None
+
+    result = (None, channel.id)
+    try:
+        async for msg in channel.history(limit=50):
+            if _is_official_rules_message(msg):
+                result = (msg.id, channel.id)
+                break
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+    if result[0]:
+        _rules_msg_cache[guild.id] = result
+        await set_setting("rules_message_id", str(result[0]))
+        await set_setting("rules_channel_id", str(result[1]))
+    return result
+
+
+async def find_rules_message(guild):
+    """Back-compat wrapper around resolve_rules_message."""
+    return await resolve_rules_message(guild)
+
+
+def parse_message_link(link: str):
+    """
+    Parse https://discord.com/channels/<guild>/<channel>/<message>
+    or a bare 'channel_id/message_id' / 'message_id' pair.
+    Returns (channel_id, message_id) or (None, None).
+    """
+    if not link:
+        return None, None
+    link = link.strip()
+    m = re.search(r'discord(?:app)?\.com/channels/\d+/(\d+)/(\d+)', link)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.fullmatch(r'(\d{15,25})[/:](\d{15,25})', link)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.fullmatch(r'(\d{15,25})', link)
+    if m:
+        return None, int(m.group(1))
+    return None, None
+
+
 def days_ago_iso(days):
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
@@ -305,7 +442,7 @@ def validate_ping(message, store, has_store_role, has_other_tag):
     """
     Official rules (staff announcements):
     - Real store role ping OR @Other + store details
-    - Meaningful body (location / stock), not chat or a pure question
+    - Meaningful body (location / stock) OR a photo (photo is the report)
     - Unique message_id (caller enforces)
     - Trainers in #open-hunting must include a photo
     Returns (counts_for_grant, reject_reason)
@@ -317,12 +454,19 @@ def validate_ping(message, store, has_store_role, has_other_tag):
 
     # Official format: store role + details
     if has_store_role:
+        # Photo + store role is a valid report (common: @Target + shelf pic, no caption).
+        if has_photo:
+            if body.endswith("?") and len(body) < 40:
+                return False, "question"
+            return True, None
         # body is message text after stripping mentions/links.
         # Short place names are OK ("Watauga", "NRH", "121") — that's the location line.
         if not body:
             return False, "empty_report"
         if len(body) < 2:
             return False, "empty_report"
+        if body.lower().replace(" ", "-") in {s.lower() for s in CONFIG.get("store_channels", [])}:
+            return False, "store_name_only"
         if body.lower() in {s.lower() for s in CONFIG.get("store_channels", [])}:
             return False, "store_name_only"
         if body.endswith("?") and len(body) < 40:
@@ -334,9 +478,11 @@ def validate_ping(message, store, has_store_role, has_other_tag):
             return False, "link_only"
         return True, None
 
-    # @Other with store spelled out + details
-    if has_other_tag and store and store != channel_name:
-        if len(body) < 12:
+    # @Other with store spelled out + details (or photo)
+    if has_other_tag and store:
+        if has_photo:
+            return True, None
+        if len(body) < 8:
             return False, "empty_report"
         return True, None
 
@@ -588,6 +734,32 @@ def canonical_location(stored_loc=None, content=None, filter_loc=None):
     return "General"
 
 
+def _norm_store_key(name):
+    """Normalize store/role names: 'Best Buy' / 'BestBuy' / 'best-buy' → 'bestbuy'."""
+    return re.sub(r'[^a-z0-9]', '', (name or "").lower())
+
+
+def match_store_role_name(role_name):
+    """Map a Discord role name to a store_channels key, or None."""
+    store_list = CONFIG.get("store_channels", [])
+    if not role_name:
+        return None
+    rn = role_name.lower().strip()
+    key = rn.replace(" ", "-")
+    if rn in store_list or key in store_list:
+        return key if key in store_list else rn
+    # BestBuy / Best Buy / best.buy all match best-buy
+    rn_norm = _norm_store_key(rn)
+    for store in store_list:
+        if _norm_store_key(store) == rn_norm:
+            return store
+    # Abbreviation-style role names (BestBuy, GameStop, MicroCenter…)
+    for abbr, store in STORE_ABBREVIATIONS.items():
+        if _norm_store_key(abbr) == rn_norm:
+            return store
+    return None
+
+
 def extract_store_from_text(message):
     """
     Official rule: ping the STORE role (or @Other + store details).
@@ -603,10 +775,9 @@ def extract_store_from_text(message):
     # 1) Real store role mentions — the official format
     store_role_pings = []
     for role in message.role_mentions:
-        role_name = (role.name or "").lower().strip()
-        key = role_name.replace(" ", "-")
-        if role_name in store_list or key in store_list:
-            store_role_pings.append(key if key in store_list else role_name)
+        matched = match_store_role_name(role.name)
+        if matched:
+            store_role_pings.append(matched)
 
     if store_role_pings:
         for store in store_role_pings:
@@ -849,6 +1020,14 @@ async def on_ready():
     if not daily_maintenance.is_running():
         daily_maintenance.start()
 
+    # Bind to the official rules message so check-mark → Hunting Noob works
+    if bot.guilds:
+        rules_msg_id, rules_channel_id = await resolve_rules_message(bot.guilds[0])
+        if rules_msg_id:
+            print(f"Rules message bound: channel={rules_channel_id} message={rules_msg_id}")
+        else:
+            print("WARNING: rules message not found — run !setrules with the message link")
+
 
 @bot.event
 async def on_member_join(member):
@@ -936,15 +1115,13 @@ async def on_message(message):
                 mention.get("has_store_role", False),
                 mention.get("has_other_tag", False),
             )
-            # Official rule: Trainers must include a photo in open-hunting
+            # Official rule: Trainers (non-Hunters) must include a photo in #open-hunting.
+            # Hunters may text-report there without a photo.
             if counts and message.channel.name == "open-hunting":
                 hunter_role = message.guild.get_role(POKEMON_HUNTER_ROLE_ID) if message.guild else None
-                is_hunter = hunter_role and hunter_role in message.author.roles
+                is_hunter = bool(hunter_role and hunter_role in message.author.roles)
                 if not is_hunter and not message.attachments:
                     counts, reject = False, "no_photo"
-            # Also skip logging entirely when open-hunting has no media (origin rule)
-            if message.channel.name == "open-hunting" and not message.attachments:
-                counts, reject = False, "no_photo"
             loc = extract_location_from_text(message.content)
             await log_ping(
                 user_id, channel_id, mention["store"], mention["role_type"],
@@ -973,7 +1150,35 @@ async def on_message(message):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    """Allow Admins and Mods to flag fake pings with ❌ reaction."""
+    """Rules check mark → Trainer + Hunting Noob. ❌ (Admin/Mod) flags fake pings."""
+    if payload.user_id == (bot.user.id if bot.user else None):
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+
+    user = guild.get_member(payload.user_id)
+    if not user or user.bot:
+        return
+
+    # ── Rules acknowledgment (check mark on the official rules message) ────
+    if is_rules_ack_emoji(payload.emoji):
+        rules_msg_id, rules_channel_id = await resolve_rules_message(guild)
+        # Only the official rules post — not every check mark in the channel
+        if not rules_msg_id or payload.message_id != rules_msg_id:
+            return
+        if rules_channel_id and payload.channel_id != rules_channel_id:
+            return
+
+        try:
+            if await assign_rules_ack_roles(user):
+                await log_role_grant(user.id, "grant", "rules_ack", "rules_ack", user.id)
+        except discord.Forbidden:
+            pass
+        return
+
+    # ── Fake-ping flag (❌) ─────────────────────────────────────────────────
     if str(payload.emoji) != "❌":
         return
 
@@ -1149,8 +1354,11 @@ async def mylevel_cmd(ctx):
     has_hunter = hunter_role in user.roles if hunter_role else False
     required = int(await get_setting("pings_to_gain"))
 
+    counted_total = await count_total("pings", user.id, only_counted=True)
+
     embed = discord.Embed(title=f"Your Activity — {user.display_name}", color=discord.Color.purple())
     embed.add_field(name="Total Pings", value=str(total), inline=True)
+    embed.add_field(name="Counted Pings", value=str(counted_total), inline=True)
     embed.add_field(name=f"Pings ({window}d)", value=str(recent), inline=True)
     embed.add_field(name="Media Posts", value=str(media_count), inline=True)
     embed.add_field(name="Chat Messages", value=str(chat_count), inline=True)
@@ -1159,11 +1367,19 @@ async def mylevel_cmd(ctx):
     if has_hunter:
         status = "✅ Maintaining"
     else:
-        needed = max(0, required - total)
+        # Eligibility uses counted pings only (same rule as Hunter grant).
+        needed = max(0, required - counted_total)
         if needed > 0:
-            status = f"⏳ {needed} more ping(s) needed ({total}/{required})"
+            status = f"⏳ {needed} more counted ping(s) needed ({counted_total}/{required})"
         else:
-            status = "⏳ Eligible — run `!sync` to get role"
+            # Members cannot run !sync (admin-only). Auto-grant attempt instead.
+            await check_grant_access(user.id, ctx.guild)
+            has_hunter = bool(hunter_role and hunter_role in user.roles)
+            status = (
+                "✅ Hunter granted"
+                if has_hunter
+                else "⏳ Eligible — Hunter will be granted automatically"
+            )
     embed.add_field(name="Status", value=status, inline=False)
     await ctx.send(embed=embed)
 
@@ -1402,19 +1618,22 @@ async def rescore_pings_for_official_rules():
     updated = 0
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT id, message_content, store, source FROM pings"
+            "SELECT id, message_content, store, has_photo FROM pings"
         )
         rows = await cursor.fetchall()
-        for pid, content, store, source in rows:
-            if store == "manual" or (source or "") == "manual":
+        for pid, content, store, has_photo in rows:
+            if store == "manual":
                 counts, reject = True, None
             else:
                 text = content or ""
                 has_role = bool(ROLE_MENTION.search(text))
                 has_other = bool(re.search(r'@other\b', text.lower()))
                 body = _strip_mentions_for_body(text)
+                photo = bool(has_photo)
                 if has_role:
-                    if not body or len(body) < 2:
+                    if photo:
+                        counts, reject = True, None
+                    elif not body or len(body) < 2:
                         counts, reject = False, "empty_report"
                     elif body.lower().replace(" ", "-") in {s.lower() for s in CONFIG.get("store_channels", [])}:
                         counts, reject = False, "store_name_only"
@@ -1422,7 +1641,7 @@ async def rescore_pings_for_official_rules():
                         counts, reject = False, "question"
                     else:
                         counts, reject = True, None
-                elif has_other and len(body) >= 8:
+                elif has_other and (photo or len(body) >= 8):
                     counts, reject = True, None
                 else:
                     counts, reject = False, "no_store_role"
@@ -2820,6 +3039,7 @@ async def givehunter_cmd(ctx, member: discord.Member = None, *, reason: str = "m
         return
     await record_hunter_role_earned(member.id, f"manual:{reason}")
     await log_role_grant(member.id, "grant", reason, "manual_give", ctx.author.id, None)
+    await remove_hunting_noob(member)
     await log_admin_action(ctx.author.id, "givehunter", member.id, reason)
     await ctx.send(f"✅ Granted **Pokemon Hunter** to {member.mention} by {ctx.author.mention}.\nReason: {reason}")
 
@@ -2854,6 +3074,7 @@ async def removehunter_cmd(ctx, member: discord.Member = None, *, reason: str = 
         await ctx.send("❌ I can't remove that role (check role hierarchy / my permissions).")
         return
     await log_role_grant(member.id, "revoke", reason, "manual_remove", ctx.author.id, None)
+    await assign_hunting_noob(member)
     await log_admin_action(ctx.author.id, "removehunter", member.id, reason)
     await ctx.send(f"🔻 Removed **Pokemon Hunter** from {member.mention} by {ctx.author.mention}.\nReason: {reason}")
 
@@ -2898,6 +3119,85 @@ async def restorehunters_cmd(ctx, *names):
     if not_found:
         msg += "\n\n⚠️ **Not found (check spelling):** " + ", ".join(not_found)
     await ctx.send(msg)
+
+
+@bot.command(name="setrules", aliases=["bindrules", "rulesmsg"])
+@commands.has_role(ADMIN_ROLE_ID)
+async def setrules_cmd(ctx, *args):
+    """Bind the official rules message (check mark → Trainer + Hunting Noob).
+
+    Usage:
+      !setrules <message link>
+      !setrules (reply to the rules message)
+      !setrules force <link>
+      !setrules status
+    """
+    args = list(args or [])
+    force = False
+    if args and args[0].lower() == "force":
+        force = True
+        args = args[1:]
+    link_or_id = args[0] if args else None
+
+    if link_or_id and link_or_id.lower() in ("status", "show", "info"):
+        msg_id, ch_id = await resolve_rules_message(ctx.guild)
+        if msg_id:
+            await ctx.send(
+                f"✅ Rules message bound\n"
+                f"Channel: `{ch_id}`\nMessage: `{msg_id}`\n"
+                f"Jump: https://discord.com/channels/{ctx.guild.id}/{ch_id}/{msg_id}"
+            )
+        else:
+            await ctx.send("❌ No rules message bound. Use `!setrules <message link>`.")
+        return
+
+    channel_id = None
+    message_id = None
+
+    if link_or_id:
+        channel_id, message_id = parse_message_link(link_or_id)
+        if not message_id:
+            await ctx.send("❌ Could not parse that. Paste a Discord message link.")
+            return
+    elif ctx.message.reference and ctx.message.reference.message_id:
+        message_id = ctx.message.reference.message_id
+        channel_id = ctx.message.reference.channel_id
+    else:
+        await ctx.send(
+            "Usage: `!setrules <message link>` or reply to the rules post with `!setrules`.\n"
+            "Right-click the rules message → **Copy Message Link**."
+        )
+        return
+
+    # Verify it really is the rules post
+    channel = ctx.guild.get_channel(channel_id) if channel_id else ctx.channel
+    if not channel:
+        await ctx.send("❌ Channel not found.")
+        return
+    try:
+        msg = await channel.fetch_message(message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        await ctx.send("❌ Could not fetch that message.")
+        return
+
+    if not force and not _is_official_rules_message(msg):
+        await ctx.send(
+            "⚠️ That message doesn't look like the official rules post "
+            "(needs \"Rules of the Discord\" + check-mark text). "
+            "Use `!setrules force <link>` to bind anyway."
+        )
+        return
+
+    await set_setting("rules_channel_id", str(channel.id))
+    await set_setting("rules_message_id", str(msg.id))
+    _rules_msg_cache[ctx.guild.id] = (msg.id, channel.id)
+    await log_admin_action(ctx.author.id, "setrules", None, f"channel={channel.id} message={msg.id}")
+    await ctx.send(
+        f"✅ Bound rules message.\n"
+        f"Channel: `{channel.id}` (`#{getattr(channel, 'name', '?')}`)\n"
+        f"Message: `{msg.id}`\n"
+        f"Check mark on this post → **Pokemon Trainer** + **Hunting Noob** (until Hunter)."
+    )
 
 
 @bot.command(name="assignnoobs")

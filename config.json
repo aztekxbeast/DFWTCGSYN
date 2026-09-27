@@ -14,6 +14,8 @@
   "mee6_silver_role_name": "Silver",
   "pokemon_trainer_role_name": "Pokemon Trainer",
   "pokemon_hunter_role_name": "Pokemon Hunter",
+  "hunting_noob_role_name": "Hunting Noob",
+  "rules_channel_name": "rules-and-guidelines",
   "admin_role_name": "Admin",
   "mod_role_name": "Moderator",
   "ping_leaderboard_size": 15,
