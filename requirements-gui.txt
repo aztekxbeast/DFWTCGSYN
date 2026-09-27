@@ -1,0 +1,4 @@
+# GUI controller extras (already in .venv via build)
+customtkinter>=5.2
+keyring>=25.0
+pillow>=10.0
