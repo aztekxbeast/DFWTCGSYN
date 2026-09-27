@@ -1162,20 +1162,20 @@ async def on_raw_reaction_add(payload):
     if not user or user.bot:
         return
 
-    # ── Rules acknowledgment (check mark on the official rules message) ────
-    if is_rules_ack_emoji(payload.emoji):
-        rules_msg_id, rules_channel_id = await resolve_rules_message(guild)
-        # Only the official rules post — not every check mark in the channel
-        if not rules_msg_id or payload.message_id != rules_msg_id:
-            return
-        if rules_channel_id and payload.channel_id != rules_channel_id:
-            return
+    # ── Rules acknowledgment (ANY reaction on the official rules message) ──
+    # Users react with ✅ / ❤️ / 🫡 etc. on the pinned access post — all count.
+    rules_msg_id, rules_channel_id = await resolve_rules_message(guild)
+    if rules_msg_id and payload.message_id == rules_msg_id:
+        if not rules_channel_id or payload.channel_id == rules_channel_id:
+            try:
+                if await assign_rules_ack_roles(user):
+                    await log_role_grant(user.id, "grant", "rules_ack", "rules_ack", user.id)
+            except discord.Forbidden:
+                pass
+        return
 
-        try:
-            if await assign_rules_ack_roles(user):
-                await log_role_grant(user.id, "grant", "rules_ack", "rules_ack", user.id)
-        except discord.Forbidden:
-            pass
+    # Non-rules check marks do nothing; ❌ continues to fake-ping flag
+    if is_rules_ack_emoji(payload.emoji):
         return
 
     # ── Fake-ping flag (❌) ─────────────────────────────────────────────────
