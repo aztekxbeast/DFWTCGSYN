@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-09-28 — Ping report times shown in DFW local time (CT)
+
+| Area | Change |
+|---|---|
+| `!pingreport` | Ping history, grant/revoke log, admin actions, and Earned date now display in **America/Chicago** — matches how Discord shows message times to mods (was raw UTC, ~5h off) |
+| `!whitelist view` | Added-on dates also converted to CT |
+| Footer | Report now labels "times in CT (DFW)" |
+
+---
+
 ## 2026-09-28 — Rules GATE counts as rules acknowledgment (fix: new members missing Hunting Noob)
 
 | Area | Change |

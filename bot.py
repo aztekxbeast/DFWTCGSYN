@@ -6,6 +6,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from collections import defaultdict
 import aiosqlite
 import asyncio
@@ -192,6 +193,20 @@ async def set_setting(key, value):
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+# Reports display times in DFW local time (stored timestamps stay UTC)
+DISPLAY_TZ = ZoneInfo("America/Chicago")
+
+
+def fmt_local(ts, fmt="%m/%d %I:%M %p"):
+    """Format a stored UTC ISO timestamp in DFW local time for display
+    (matches how Discord shows message times to the mods)."""
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return dt.astimezone(DISPLAY_TZ).strftime(fmt)
+    except (ValueError, TypeError):
+        return str(ts)[:16].replace("T", " ")
 
 
 async def record_hunter_role_earned(user_id, reason="threshold"):
@@ -1548,8 +1563,7 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
                 except (discord.NotFound, discord.HTTPException):
                     admin_name = "Unknown"
             try:
-                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                date_str = dt.strftime("%m/%d/%Y")
+                date_str = fmt_local(timestamp, "%m/%d/%Y")
             except (ValueError, TypeError):
                 date_str = timestamp[:10]
             embed.add_field(name=name, value=f"Added by {admin_name} on {date_str}", inline=False)
@@ -1965,7 +1979,7 @@ async def pingreport_cmd(ctx, target: str = None, limit: int = 15):
     embed.add_field(name="Whitelist", value="✅" if is_wl else "—", inline=True)
     embed.add_field(
         name="Earned",
-        value=(f"{earned_row[1] or '?'}\n{earned_row[0][:10]}" if earned_row else "—"),
+        value=(f"{earned_row[1] or '?'}\n{fmt_local(earned_row[0], '%m/%d/%Y')}" if earned_row else "—"),
         inline=True,
     )
     embed.add_field(name="Raw rows", value=str(raw_total), inline=True)
@@ -1994,26 +2008,26 @@ async def pingreport_cmd(ctx, target: str = None, limit: int = 15):
                 link = f" [jump](https://discord.com/channels/{ctx.guild.id}/{ch_id}/{msg_id})"
             snippet = (content or "Manually added ping").replace("\n", " ")[:70]
             lines.append(
-                f"`{ts[:16].replace('T',' ')}` {flag} {photo} **{store or '?'}**/{mtype or '?'}"
+                f"`{fmt_local(ts)}` {flag} {photo} **{store or '?'}**/{mtype or '?'}"
                 f"{' #' + (ch_name or '') if ch_name else ''}{link}\n{snippet}"
             )
         embed.add_field(name=f"Last {len(recent)} pings", value="\n".join(lines)[:1020], inline=False)
 
     if grant_hist:
         glines = [
-            f"• `{g[5][:16]}` **{g[1]}** · {g[3] or g[2] or ''} · actor {g[0] or 'bot'}"
+            f"• `{fmt_local(g[5])}` **{g[1]}** · {g[3] or g[2] or ''} · actor {g[0] or 'bot'}"
             for g in grant_hist
         ]
         embed.add_field(name="Grant/revoke log", value="\n".join(glines)[:1020], inline=False)
 
     if admin_hist:
         alines = [
-            f"• `{a[3][:16]}` {a[1]} · by {a[0]} · {a[2] or ''}"
+            f"• `{fmt_local(a[3])}` {a[1]} · by {a[0]} · {a[2] or ''}"
             for a in admin_hist
         ]
         embed.add_field(name="Admin actions (targeted)", value="\n".join(alines)[:1020], inline=False)
 
-    embed.set_footer(text=f"Requested by {ctx.author} · only counted pings earn Hunter")
+    embed.set_footer(text=f"Requested by {ctx.author} · times in CT (DFW) · only counted pings earn Hunter")
     await ctx.send(embed=embed)
     await log_admin_action(ctx.author.id, "pingreport", target.id, f"limit={limit}")
 
