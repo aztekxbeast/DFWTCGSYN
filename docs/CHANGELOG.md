@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-09-28 — Rules GATE counts as rules acknowledgment (fix: new members missing Hunting Noob)
+
+| Area | Change |
+|---|---|
+| Rules gate | Passing Discord's membership-screening rules gate (`pending` → cleared) now assigns **Pokemon Trainer** + **Hunting Noob** — same as reacting to the rules post (was reaction-only, so gate-only acks got nothing) |
+| Reaction ack | Now uses the event's member payload + fetch fallback — brand-new members no longer silently skipped on cache miss |
+| Logging | Rules-gate grants logged as `rules_ack`/`rules_gate`; failures print instead of vanishing |
+
+Root cause for `tempezts` (Ponch): server has `MEMBER_VERIFICATION_GATE_ENABLED`; the user joined and acknowledged via the gate — no reaction event ever fired, and the DB showed no `rules_ack` row. Role fixed manually; automation now covers the gate path.
+
+---
+
 ## 2026-09-27 — Hunting Noob auto-assigned when Hunter role is lost
 
 | Area | Change |

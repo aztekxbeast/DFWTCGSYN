@@ -1072,6 +1072,17 @@ async def on_member_update(before, after):
     (maintenance revoke, admin edit, other bots): loss → Hunting Noob, gain → remove it."""
     if after.bot:
         return
+
+    # ── Rules gate (membership screening) passed = rules acknowledged ──
+    # Same effect as reacting to the official rules post: Trainer + Hunting Noob.
+    if before.pending and not after.pending:
+        try:
+            if await assign_rules_ack_roles(after):
+                await log_role_grant(after.id, "grant", "rules_ack", "rules_gate", after.id)
+                print(f"Rules gate passed: assigned roles to {after} ({after.id})")
+        except discord.HTTPException as e:
+            print(f"ERROR assigning roles after rules gate for {after.id}: {e}")
+
     hunter_role = after.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     if not hunter_role:
         return
@@ -1176,8 +1187,15 @@ async def on_raw_reaction_add(payload):
     if not guild:
         return
 
-    user = guild.get_member(payload.user_id)
-    if not user or user.bot:
+    # payload.member is populated for reaction events — reliable for brand-new
+    # members that may not be in the cache yet. Fetch as a last resort.
+    user = payload.member or guild.get_member(payload.user_id)
+    if not user:
+        try:
+            user = await guild.fetch_member(payload.user_id)
+        except discord.HTTPException:
+            return
+    if user.bot:
         return
 
     # ── Rules acknowledgment (ANY reaction on the official rules message) ──
