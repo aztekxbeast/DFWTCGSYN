@@ -971,6 +971,7 @@ async def check_access(user_id, guild):
             return
 
         await member.remove_roles(hunter_role, reason="Failed activity maintenance")
+        await assign_hunting_noob(member)
         await log_role_grant(user_id, "revoke", f"failed maintenance pings={pings} media={media_count} chat={chat_count}", "maintenance", None, pings)
         channel = get_announcement_channel(guild)
         if channel:
@@ -1063,6 +1064,23 @@ async def on_member_join(member):
                 await member.add_roles(noob_role, reason="New member with Pokemon Trainer role")
             except discord.Forbidden:
                 pass
+
+
+@bot.event
+async def on_member_update(before, after):
+    """Keep Hunting Noob in sync whenever Pokemon Hunter changes for ANY reason
+    (maintenance revoke, admin edit, other bots): loss → Hunting Noob, gain → remove it."""
+    if after.bot:
+        return
+    hunter_role = after.guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    if not hunter_role:
+        return
+    had_hunter = hunter_role in before.roles
+    has_hunter = hunter_role in after.roles
+    if had_hunter and not has_hunter:
+        await assign_hunting_noob(after)
+    elif has_hunter and not had_hunter:
+        await remove_hunting_noob(after)
 
 
 @bot.event

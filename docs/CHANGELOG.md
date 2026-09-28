@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-09-27 — Hunting Noob auto-assigned when Hunter role is lost
+
+| Area | Change |
+|---|---|
+| Maintenance revoke | Losing **Pokemon Hunter** for failing activity maintenance now auto-assigns **Hunting Noob** (was only in `!removehunter`) |
+| Any role change | New `on_member_update` sync: Hunter lost (admin edit / other bot) → **Hunting Noob** · Hunter gained → Noob removed |
+| Guard | Noob only assigned to **Pokemon Trainer** holders (unchanged) |
+
+---
+
 ## 2026-09-27 — Ticket fixes (pings not counting) + rules → Hunting Noob
 
 | Area | Change |
