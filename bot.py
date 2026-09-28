@@ -1104,8 +1104,8 @@ async def on_message(message):
     channel_id = message.channel.id
     user_id = message.author.id
 
-    # Track pings in all channels except server-announcements and get-roles (max 1 ping per message)
-    if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
+    # Track pings in all channels except server-announcements, get-roles, and general-chat (max 1 ping per message)
+    if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID) and message.channel.name != "general-chat":
         store_mentions = extract_store_from_text(message)
         if store_mentions:
             mention = store_mentions[0]
@@ -1484,6 +1484,42 @@ async def helpme_cmd(ctx):
 @bot.command(name="whitelist")
 @commands.has_role(ADMIN_ROLE_ID)
 async def whitelist_cmd(ctx, action: str = None, target: str = None):
+    if action == "view":
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("SELECT user_id, added_by, timestamp FROM whitelist ORDER BY timestamp DESC")
+            rows = await cursor.fetchall()
+        if not rows:
+            await ctx.send("📋 No users are whitelisted.")
+            return
+        embed = discord.Embed(title="Whitelisted Users", color=discord.Color.green())
+        for user_id, added_by, timestamp in rows:
+            member = ctx.guild.get_member(user_id)
+            if member:
+                name = member.display_name
+            else:
+                try:
+                    user = await ctx.bot.fetch_user(user_id)
+                    name = f"{user.name} (left server)"
+                except (discord.NotFound, discord.HTTPException):
+                    name = f"Unknown ({user_id})"
+            added_by_member = ctx.guild.get_member(added_by)
+            if added_by_member:
+                admin_name = added_by_member.display_name
+            else:
+                try:
+                    admin_user = await ctx.bot.fetch_user(added_by)
+                    admin_name = admin_user.name
+                except (discord.NotFound, discord.HTTPException):
+                    admin_name = "Unknown"
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                date_str = dt.strftime("%m/%d/%Y")
+            except (ValueError, TypeError):
+                date_str = timestamp[:10]
+            embed.add_field(name=name, value=f"Added by {admin_name} on {date_str}", inline=False)
+        await ctx.send(embed=embed)
+        return
+
     if action not in ("add", "remove") or not target:
         await ctx.send("Usage: `!whitelist add/remove @user` or `!whitelist add/remove userid`")
         return
@@ -3544,14 +3580,20 @@ async def deepbackfill_cmd(ctx, days: int = 7):
     # Dynamically find all channels under Ft Worth Area Hunts and Dallas Area Hunts categories
     location_categories = ["ft worth area hunts", "dallas area hunts", "others", "store general info"]
     for cat_name in location_categories:
-        category = discord.utils.get(ctx.guild.categories, name__iexact=cat_name)
+        category = discord.utils.get(ctx.guild.categories, name=cat_name)
+        if not category:
+            # Try case-insensitive match
+            for cat in ctx.guild.categories:
+                if cat.name.lower() == cat_name.lower():
+                    category = cat
+                    break
         if category:
             for ch in category.text_channels:
                 if ch.name not in scan_channels:
                     scan_channels.append(ch.name)
 
-    # Always include these hunting/general channels
-    for ch_name in ["open-hunting", "general-chat"]:
+    # Always include these hunting channels
+    for ch_name in ["open-hunting"]:
         if ch_name not in scan_channels:
             scan_channels.append(ch_name)
 
@@ -3605,6 +3647,12 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                             matched_stores.append(store_channel)
                     if not matched_stores and channel_name in store_list:
                         matched_stores.append(channel_name)
+                    # Also detect pings with location words but no store name
+                    if not matched_stores:
+                        for loc_word in LOCATION_WORDS:
+                            if loc_word in content_lower.split():
+                                matched_stores.append(channel_name if channel_name in store_list else "unknown")
+                                break
 
                 if not matched_stores and is_store_or_hunting:
                     words = content_lower.split()
@@ -3617,8 +3665,15 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                         for store in store_list:
                             if store in content_lower or store.replace("-", " ") in content_lower:
                                 matched_stores.append(store)
+                    # If in a store channel with a ping, count the channel as the store
+                    if not matched_stores and has_ping and channel_name in store_list:
+                        matched_stores.append(channel_name)
 
                 if not matched_stores:
+                    continue
+
+                # In open-hunting, only count pings with media attached
+                if channel_name == "open-hunting" and not message.attachments:
                     continue
 
                 mention_type = "location" if has_ping else "location"
