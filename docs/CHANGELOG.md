@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-09-28 — Fix: pings with @Barnes / @SamsClub / @5Below etc. never counted
+
+| Area | Change |
+|---|---|
+| Store role matching | Role names that don't normalize to store keys now map correctly: **Barnes** → `barnes-and-noble`, **SamsClub** → `sam's-costco`, and **5Below / DicksSG / HEB / LocalCardStore / PopShelf / QT** → `others` bucket (same as Ace Hardware). Their pings were silently dropped (not even logged as rows) |
+| OOS clarification | Store role **+ @OOS** together always counted fine when the store role matched (e.g. `@Target` + `@OOS`) — the misses were purely the unmatched role names above |
+| `!deepbackfill` | Now also matches store names from role mentions (same matcher as live), so recovered pings get the correct store instead of "unknown" |
+
+---
+
 ## 2026-09-28 — Ping report times shown in DFW local time (CT)
 
 | Area | Change |

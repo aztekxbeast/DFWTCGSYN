@@ -628,6 +628,25 @@ STORE_ABBREVIATIONS = {
     "@mitsuwa": "mitsuwa",
     "@scheels": "scheels",
     "@gamestop": "gamestop",
+    # Server store role names that don't normalize to store_channels keys
+    "barnes": "barnes-and-noble",
+    "barnes & noble": "barnes-and-noble",
+    "samsclub": "sam's-costco",
+    "sams club": "sam's-costco",
+    "sam's club": "sam's-costco",
+    # Store roles without a dedicated store channel → others bucket (like Ace Hardware)
+    "5below": "others",
+    "five below": "others",
+    "dickssg": "others",
+    "dicks sporting goods": "others",
+    "heb": "others",
+    "h-e-b": "others",
+    "localcardstore": "others",
+    "lcs": "others",
+    "popshelf": "others",
+    "pop shelf": "others",
+    "qt": "others",
+    "quiktrip": "others",
 }
 
 # Location aliases — vague location words that map to a specific store
@@ -3689,6 +3708,11 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 matched_stores = []
 
                 if has_ping:
+                    # Real store role mentions first (same matching as the live handler)
+                    for r in message.role_mentions:
+                        m = match_store_role_name(r.name)
+                        if m and m not in matched_stores:
+                            matched_stores.append(m)
                     for store in store_list:
                         if store in content_lower or store.replace("-", " ") in content_lower:
                             matched_stores.append(store)
