@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-01 — Fix: intermittent missing Hunting Noob on join (write race + self-healing)
+
+| Area | Change |
+|---|---|
+| Root cause | Role writes made in the same second as the rules-gate flip (users clicking through screening instantly) can be washed out — bot logged "assigned" but roles were missing server-side (e.g. meowzer024, dropmass, pugachu99) |
+| Join flow | Pending members no longer get role writes at join — roles are assigned only **after** the gate passes (avoids the wash-out) |
+| Re-check | 90s after the gate, a re-check repairs any role that didn't stick (logged as `rules_recheck`) |
+| Self-heal sweep | Every 10 min (and at startup): members who joined within 7 days and passed the gate get missing Trainer/Hunting Noob (logged as `sweep`) — catches races, restarts, and lost events |
+| Logging | Role-assignment failures now print errors instead of being silently swallowed |
+
+---
+
 ## 2026-09-28 — Fix: pings with @Barnes / @SamsClub / @5Below etc. never counted
 
 | Area | Change |

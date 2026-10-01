@@ -275,17 +275,66 @@ async def assign_rules_ack_roles(member) -> bool:
         try:
             await member.add_roles(trainer_role, reason="Rules acknowledged (check mark)")
             assigned = True
-        except discord.Forbidden:
-            pass
+        except discord.HTTPException as e:
+            print(f"ERROR assigning Trainer to {member} ({member.id}): {e}")
 
     # Hunting Noob until Pokemon Hunter
     if noob_role and noob_role not in member.roles and not (hunter_role and hunter_role in member.roles):
         try:
             await member.add_roles(noob_role, reason="Rules acknowledged (check mark)")
             assigned = True
-        except discord.Forbidden:
-            pass
+        except discord.HTTPException as e:
+            print(f"ERROR assigning Hunting Noob to {member} ({member.id}): {e}")
     return assigned
+
+
+async def reassert_rules_roles_later(user_id: int, delay: int):
+    """Re-check a new member after `delay` seconds and repair missing starter roles.
+    Guards against role writes being lost in the race with rules-gate completion."""
+    await asyncio.sleep(delay)
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    member = guild.get_member(user_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return
+    if member.bot or member.pending:
+        return
+    trainer_role = guild.get_role(POKEMON_TRAINER_ROLE_ID)
+    noob_role = guild.get_role(HUNTING_NOOB_ROLE_ID)
+    hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+    missing = (trainer_role and trainer_role not in member.roles) or (
+        noob_role and noob_role not in member.roles
+        and not (hunter_role and hunter_role in member.roles)
+    )
+    if missing and await assign_rules_ack_roles(member):
+        await log_role_grant(member.id, "grant", "rules_ack", "rules_recheck", member.id)
+        print(f"Recheck: repaired missing roles for {member} ({member.id})")
+
+
+@tasks.loop(minutes=10)
+async def role_sweep():
+    """Safety net: give Trainer + Hunting Noob to members who passed the rules gate
+    but are missing them (covers write races, restarts, and lost gateway events)."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    fixed = 0
+    for member in list(guild.members):
+        if member.bot or member.pending:
+            continue
+        if member.joined_at and member.joined_at < cutoff:
+            continue
+        if await assign_rules_ack_roles(member):
+            await log_role_grant(member.id, "grant", "rules_ack", "sweep", member.id)
+            print(f"Sweep: assigned missing roles to {member} ({member.id})")
+            fixed += 1
+    if fixed:
+        print(f"Role sweep repaired {fixed} member(s)")
 
 
 RULES_ACK_EMOJIS = {"✅", "☑️", "☑", "✔️", "✔", "white_check_mark", "heavy_check_mark", "ballot_box_with_check"}
@@ -1055,6 +1104,10 @@ async def on_ready():
     if not daily_maintenance.is_running():
         daily_maintenance.start()
 
+    # Safety net: repairs any recent member missing Trainer/Hunting Noob
+    if not role_sweep.is_running():
+        role_sweep.start()
+
     # Bind to the official rules message so check-mark → Hunting Noob works
     if bot.guilds:
         rules_msg_id, rules_channel_id = await resolve_rules_message(bot.guilds[0])
@@ -1066,6 +1119,15 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
+    if member.bot:
+        return
+    # Role writes made while a member is still pending (rules gate not yet passed)
+    # can be silently washed out when they complete screening. Defer all role
+    # assignment to the rules-gate handler in on_member_update for pending members.
+    if member.pending:
+        print(f"Member {member} ({member.id}) joined pending — deferring roles to rules gate")
+        return
+
     if MEE6_SILVER_ROLE_ID:
         silver_role = member.guild.get_role(MEE6_SILVER_ROLE_ID)
         hunter_role = member.guild.get_role(POKEMON_HUNTER_ROLE_ID)
@@ -1116,6 +1178,9 @@ async def on_member_update(before, after):
                 print(f"Rules gate passed: assigned roles to {after} ({after.id})")
         except discord.HTTPException as e:
             print(f"ERROR assigning roles after rules gate for {after.id}: {e}")
+        # Re-assert shortly after: role writes made in the same second as the gate
+        # flip can race screening completion and be washed out (see changelog).
+        asyncio.create_task(reassert_rules_roles_later(after.id, 90))
 
     hunter_role = after.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     if not hunter_role:
