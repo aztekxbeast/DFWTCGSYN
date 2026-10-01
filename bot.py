@@ -680,6 +680,13 @@ STORE_ABBREVIATIONS = {
     # Server store role names that don't normalize to store_channels keys
     "barnes": "barnes-and-noble",
     "barnes & noble": "barnes-and-noble",
+    "bjs": "bjs-wholesale",
+    "bj's": "bjs-wholesale",
+    "bjs wholesale": "bjs-wholesale",
+    "bj's wholesale": "bjs-wholesale",
+    "bjswholesale": "bjs-wholesale",
+    "@bjs": "bjs-wholesale",
+    "@bjswholesale": "bjs-wholesale",
     "samsclub": "sam's-costco",
     "sams club": "sam's-costco",
     "sam's club": "sam's-costco",

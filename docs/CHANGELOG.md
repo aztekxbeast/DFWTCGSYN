@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-01 — New store: BJs Wholesale (@BJs Wholesale role now counts as a ping)
+
+| Area | Change |
+|---|---|
+| Store list | Added `bjs-wholesale` to `store_channels` in `config.json` — pinging the **@BJs Wholesale** role counts as an official store ping (needs the usual details/photo per rules) |
+| Role matching | Name variants all map correctly: `BJs Wholesale`, `BJ's Wholesale`, `BJS`, `Bjs`, `bjs-wholesale` |
+| Reports | BJ's pings show as `bjs-wholesale` in `!pingreport` / history (own store, not lumped into `others`) |
+
+---
+
 ## 2026-10-01 — Fix: intermittent missing Hunting Noob on join (write race + self-healing)
 
 | Area | Change |
