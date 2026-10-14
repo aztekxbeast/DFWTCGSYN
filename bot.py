@@ -37,6 +37,9 @@ RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "1496203694994227313"))
 RULES_MESSAGE_ID = int(os.getenv("RULES_MESSAGE_ID", "1514825112598089799"))
 # Staff review role (Professor Oak) — can run !pingreport
 PROFESSOR_OAK_ROLE_ID = int(os.getenv("PROFESSOR_OAK_ROLE_ID", "0"))
+# Members who can NEVER be kicked by !removeinactives (matched against
+# username/nick/display name). dfwpokeman is unavailable — permanent.
+KICK_EXEMPT_USERNAMES = ("dfwpokeman",)
 
 DB_PATH = "data/pokehunt.db"
 
@@ -133,6 +136,21 @@ async def init_db():
                 ping_count INTEGER,
                 timestamp TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS user_activity (
+                user_id INTEGER PRIMARY KEY,
+                last_seen TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS kick_whitelist (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER,
+                timestamp TEXT
+            );
+            CREATE TABLE IF NOT EXISTS inactive_scan (
+                user_id INTEGER PRIMARY KEY,
+                last_seen TEXT,
+                inactive_days INTEGER,
+                scanned_at TEXT NOT NULL
+            );
         """)
         # Migrations for existing database schemas
         try:
@@ -169,6 +187,24 @@ async def init_db():
             await db.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, str(value))
+            )
+        await db.commit()
+
+        # Seed user_activity from existing chat/ping/media history so
+        # !inactivesearch has a baseline on first run (keeps the newest stamp).
+        cursor = await db.execute("""
+            SELECT user_id, MAX(timestamp) FROM (
+                SELECT user_id, timestamp FROM chat
+                UNION ALL SELECT user_id, timestamp FROM pings
+                UNION ALL SELECT user_id, timestamp FROM media
+            ) GROUP BY user_id
+        """)
+        activity_rows = await cursor.fetchall()
+        if activity_rows:
+            await db.executemany(
+                "INSERT INTO user_activity (user_id, last_seen) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET last_seen = MAX(user_activity.last_seen, excluded.last_seen)",
+                activity_rows,
             )
         await db.commit()
 
@@ -236,6 +272,37 @@ async def log_admin_action(actor_id, action, target_id=None, detail=None):
             (actor_id, action, target_id, detail, now_iso())
         )
         await db.commit()
+
+
+async def upsert_user_activity(user_id):
+    """Record a member's latest comment/reaction for inactivity scans."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO user_activity (user_id, last_seen) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET last_seen = excluded.last_seen",
+                (user_id, now_iso())
+            )
+            await db.commit()
+    except Exception:
+        pass  # activity tracking must never break message/reaction handling
+
+
+def is_name_kick_exempt(member):
+    """Built-in permanent kick exemptions, matched by username/nick/display name."""
+    names = {member.name.casefold(), member.display_name.casefold()}
+    if member.nick:
+        names.add(member.nick.casefold())
+    return any(n in names for n in KICK_EXEMPT_USERNAMES)
+
+
+async def is_kick_protected(member):
+    """True if this member can never be kicked by !removeinactives."""
+    if is_name_kick_exempt(member):
+        return True
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM kick_whitelist WHERE user_id = ?", (member.id,))
+        return await cursor.fetchone() is not None
 
 
 async def remove_hunting_noob(member):
@@ -1234,6 +1301,8 @@ async def on_message(message):
     if not message.guild:
         return
 
+    await upsert_user_activity(message.author.id)
+
     await bot.process_commands(message)
 
     channel_id = message.channel.id
@@ -1303,6 +1372,8 @@ async def on_raw_reaction_add(payload):
             return
     if user.bot:
         return
+
+    await upsert_user_activity(payload.user_id)
 
     # ── Rules acknowledgment (ANY reaction on the official rules message) ──
     # Users react with ✅ / ❤️ / 🫡 etc. on the pinned access post — all count.
@@ -1595,13 +1666,16 @@ async def helpme_cmd(ctx):
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
                 "`!pingreport @user` — Full ping history (mention, username, or ID)\n"
-                "`!allStats` — Server-wide activity overview\n"
+                "`!allStats` — Server-wide Hunter access & activity overview\n"
                 "`!sync` — Run manual access check\n"
                 "`!syncdry` — Preview who would gain/lose Hunter (no changes)\n"
                 "`!addping @user <count>` — Add pings (Admin only)\n"
                 "`!givehunter @user [reason]` — Grant Hunter (Admin only)\n"
                 "`!removehunter @user [reason]` — Remove Hunter (Admin only)\n"
-                "`!restorehunters` — Restore Hunter role for removed users"
+                "`!restorehunters` — Restore Hunter role for removed users\n"
+                "`!inactivesearch [days]` — List members inactive (no comments/reacts, default 60d)\n"
+                "`!removeinactives [except @user]` — Kick inactive list (with exceptions)\n"
+                "`!kickwhitelist add/remove @user` — Protect user from !removeinactives"
             ),
             inline=False
         )
@@ -2180,7 +2254,7 @@ async def stats_cmd(ctx, target: discord.Member = None):
 @bot.command(name="allstats")
 @commands.has_role(ADMIN_ROLE_ID)
 async def allstats_cmd(ctx):
-    """Show an overview of all members with activity and Hunter status."""
+    """Show a server-wide overview of Hunter access and ping activity."""
     guild = ctx.guild
     hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
     window = int(await get_setting("maintenance_window_days"))
@@ -2195,15 +2269,29 @@ async def allstats_cmd(ctx):
         all_pingers = await cursor.fetchall()
 
         cursor = await db.execute(
-            f"SELECT user_id, COUNT(*) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
+            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
             (days_ago_iso(window),)
         )
         recent_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
 
+        cursor = await db.execute(
+            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE counts_for_grant = 1 GROUP BY user_id"
+        )
+        counted_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
+
         cursor = await db.execute("SELECT user_id FROM whitelist")
         whitelisted = {row[0] for row in await cursor.fetchall()}
 
-    hunter_count = 0
+    # Hunter access comes from the role itself (whitelist, MEE6, and manual
+    # grants), so count role holders across the whole roster — not only
+    # members who happen to have pings on record.
+    hunter_members = (
+        {m.id for m in guild.members if hunter_role in m.roles} if hunter_role else set()
+    )
+    wl_members = {uid for uid in whitelisted if guild.get_member(uid)}
+    access_members = hunter_members | wl_members
+
+    hunter_count = len(hunter_members)
     ready_count = 0
     near_count = 0
     inactive_count = 0
@@ -2214,42 +2302,65 @@ async def allstats_cmd(ctx):
         if not member:
             continue
 
-        has_hunter = hunter_role in member.roles if hunter_role else False
-        is_wl = user_id in whitelisted
+        has_hunter = user_id in hunter_members
+        is_wl = user_id in wl_members
         recent = recent_pingers.get(user_id, 0)
-        maintain_req = int(await get_setting("pings_to_maintain"))
+        counted = counted_pingers.get(user_id, 0)
 
-        if has_hunter:
-            hunter_count += 1
-        if total >= required or is_wl:
+        if has_hunter or is_wl or counted >= required:
             ready_count += 1
-        elif total >= required * 0.7:
+        elif counted >= required * 0.7:
             near_count += 1
         else:
             inactive_count += 1
 
         entries.append((member.display_name, total, recent, has_hunter, is_wl, user_id))
 
-    total_active = len(all_pingers)
-    embed = discord.Embed(title="Server Activity Overview", color=discord.Color.blue())
-    embed.add_field(name="Total Active Users", value=str(total_active), inline=True)
-    embed.add_field(name="Pokemon Hunter Holders", value=str(hunter_count), inline=True)
-    embed.add_field(name="Whitelisted", value=str(len(whitelisted)), inline=True)
-    embed.add_field(name=f"Ready ({required}+ pings)", value=str(ready_count), inline=True)
-    embed.add_field(name=f"Near Ready (70%+)", value=str(near_count), inline=True)
-    embed.add_field(name="Below Threshold", value=str(inactive_count), inline=True)
+    total_active = len(entries)
+    access_count = len(access_members)
+    ready_pct = (ready_count / total_active) if total_active else 0.0
+
+    def bar(pct, length=10):
+        filled = round(pct * length)
+        return "🟩" * filled + "⬛" * (length - filled)
+
+    embed = discord.Embed(
+        title="🏆 Hunter Access Report",
+        color=discord.Color.gold(),
+        description=(
+            f"🎯 **{access_count}** members currently have Hunter access "
+            f"({hunter_count} with the role · {len(wl_members)} whitelisted)\n"
+            f"👥 **{total_active}** members with ping history · 🌐 **{guild.member_count}** total members"
+        ),
+    )
+    embed.add_field(name="🎖️ Hunter Role Holders", value=f"**{hunter_count}**", inline=True)
+    embed.add_field(name="⭐ Whitelisted (in server)", value=f"**{len(wl_members)}**", inline=True)
+    embed.add_field(name="🔓 Total With Access", value=f"**{access_count}**", inline=True)
+    embed.add_field(
+        name=f"✅ Ready ({required}+ counted pings)",
+        value=f"**{ready_count}** {bar(ready_pct)}",
+        inline=False,
+    )
+    embed.add_field(name="👀 Nearly Ready (70%+)", value=f"**{near_count}**", inline=True)
+    embed.add_field(name="🔻 Below Threshold", value=f"**{inactive_count}**", inline=True)
 
     top20 = entries[:20]
     if top20:
-        leaderboard = ""
         medals = ["🥇", "🥈", "🥉"]
+        lines = []
         for i, (name, total, recent, has_h, is_wl, uid) in enumerate(top20):
-            prefix = medals[i] if i < 3 else f"**{i+1}.**"
-            status = "✅" if has_h else ("⭐" if is_wl else "")
-            leaderboard += f"{prefix} {name} — {total} total, {recent} recent {status}\n"
-        embed.add_field(name="Top 20 by Total Pings", value=leaderboard, inline=False)
+            prefix = medals[i] if i < 3 else f"**#{i+1}**"
+            status = "✅" if has_h else ("⭐" if is_wl else "🔹")
+            lines.append(f"{prefix} {status} **{name}** — {total} total · {recent} in {window}d")
+        embed.add_field(name="📊 Top 20 by Total Pings", value="\n".join(lines)[:1020], inline=False)
 
-    embed.set_footer(text=f"✅ = Hunter | ⭐ = Whitelisted | Req: {required} pings")
+    embed.set_footer(
+        text=(
+            f"✅ = Hunter · ⭐ = Whitelisted · 🔹 = no access yet · "
+            f"Req: {required} counted pings · Window: {window}d · times in CT (DFW)"
+        )
+    )
+    embed.timestamp = datetime.now(timezone.utc)
     await ctx.send(embed=embed)
 
 
@@ -3189,6 +3300,272 @@ async def listlocations_cmd(ctx):
     lines = [f"• {loc}" for loc in sorted(LOCATION_WORDS)]
     embed = discord.Embed(title="Tracked Location Words", description="\n".join(lines), color=discord.Color.blue())
     embed.set_footer(text="When these appear in store/hunting channels, they're tracked as pings for that channel's store.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="kickwhitelist", aliases=["kickwl", "inactivewhitelist"])
+@commands.has_role(ADMIN_ROLE_ID)
+async def kickwhitelist_cmd(ctx, action: str = None, target: str = None):
+    """Manage users who can NEVER be kicked by !removeinactives.
+    Usage: !kickwhitelist add @user | !kickwhitelist remove @user | !kickwhitelist list
+    dfwpokeman is permanently exempt (built in — unavailable)."""
+    if action in ("list", "show", None):
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "SELECT user_id, added_by, timestamp FROM kick_whitelist ORDER BY timestamp DESC"
+            )
+            rows = await cursor.fetchall()
+        lines = [
+            f"• <@{r[0]}> (`{r[0]}`) — added by <@{r[1]}> {fmt_local(r[2])}"
+            for r in rows
+        ]
+        lines += [
+            f"• **{m.display_name}** (`{m.id}`) — 🛡️ built-in exempt"
+            for m in ctx.guild.members if is_name_kick_exempt(m)
+        ]
+        embed = discord.Embed(
+            title="🛡️ Kick Whitelist",
+            description="\n".join(lines) if lines else "*No kick-whitelisted users.*",
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="These users are never kicked by !removeinactives.")
+        await ctx.send(embed=embed)
+        return
+
+    if action not in ("add", "remove") or not target:
+        await ctx.send("Usage: `!kickwhitelist add/remove @user` or `!kickwhitelist list`")
+        return
+
+    member = None
+    m = re.match(r"<@!?(\d+)>$", target)
+    if m:
+        member = ctx.guild.get_member(int(m.group(1)))
+    elif target.isdigit():
+        member = ctx.guild.get_member(int(target))
+    if not member:
+        member = ctx.guild.get_member_named(target)
+    if not member:
+        await ctx.send(f"❌ Could not find member **{target}**.")
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        if action == "add":
+            await db.execute(
+                "INSERT OR REPLACE INTO kick_whitelist (user_id, added_by, timestamp) VALUES (?, ?, ?)",
+                (member.id, ctx.author.id, now_iso()),
+            )
+            await db.commit()
+            await log_admin_action(ctx.author.id, "kickwhitelist_add", member.id, None)
+            await ctx.send(f"🛡️ {member.mention} can never be kicked by `!removeinactives`.")
+        else:
+            await db.execute("DELETE FROM kick_whitelist WHERE user_id = ?", (member.id,))
+            await db.commit()
+            await log_admin_action(ctx.author.id, "kickwhitelist_remove", member.id, None)
+            await ctx.send(
+                f"✅ Removed {member.mention} from the kick whitelist.\n"
+                "(Built-in exempt users can only be unprotected by editing `KICK_EXEMPT_USERNAMES` in bot.py.)"
+            )
+
+
+@bot.command(name="inactivesearch", aliases=["inactivescan", "inactivelist"])
+@commands.has_role(ADMIN_ROLE_ID)
+async def inactivesearch_cmd(ctx, days: int = None):
+    """List members with no comments or reactions for X days (default 60 = 2 months).
+    Usage: !inactivesearch [days]
+    Saves the list for !removeinactives."""
+    days = days if days and days > 0 else 60
+    guild = ctx.guild
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = cutoff_dt.isoformat()
+    scanned_at = now_iso()
+
+    await ctx.send(f"🔄 Scanning for members with no activity since {cutoff_dt.strftime('%m/%d/%Y')}...")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT user_id, last_seen FROM user_activity")
+        last_seen_map = {row[0]: row[1] for row in await cursor.fetchall()}
+        cursor = await db.execute("SELECT user_id FROM kick_whitelist")
+        kick_wl = {row[0] for row in await cursor.fetchall()}
+
+    results = []
+    bots = staff = too_new = 0
+    for member in guild.members:
+        if member.bot:
+            bots += 1
+            continue
+        if is_staff_or_oak(member):
+            staff += 1
+            continue
+        joined = member.joined_at
+        if joined and joined > cutoff_dt:
+            too_new += 1
+            continue
+        last_seen = last_seen_map.get(member.id)
+        if last_seen and last_seen >= cutoff:
+            continue
+        if last_seen:
+            try:
+                seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                days_inactive = max(0, (datetime.now(timezone.utc) - seen_dt).days)
+            except ValueError:
+                days_inactive = days
+        else:
+            days_inactive = (datetime.now(timezone.utc) - joined).days if joined else days
+        results.append((member, last_seen, days_inactive))
+
+    # Most inactive first: never-active entries before oldest last_seen
+    results.sort(key=lambda r: (r[1] is not None, r[1] or ""))
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM inactive_scan")
+        await db.executemany(
+            "INSERT OR REPLACE INTO inactive_scan (user_id, last_seen, inactive_days, scanned_at) VALUES (?, ?, ?, ?)",
+            [(m.id, ls, di, scanned_at) for m, ls, di in results],
+        )
+        await db.commit()
+
+    embed = discord.Embed(
+        title=f"💤 Inactive Members — no activity for {days}+ days",
+        color=discord.Color.orange(),
+    )
+    if not results:
+        embed.description = "🎉 No inactive members found!"
+    else:
+        lines = []
+        for member, last_seen, days_inactive in results[:100]:
+            shield = " 🛡️" if (member.id in kick_wl or is_name_kick_exempt(member)) else ""
+            if last_seen:
+                lines.append(
+                    f"• **{member.display_name}** (`{member.id}`) — last active "
+                    f"{fmt_local(last_seen, '%m/%d/%Y')} ({days_inactive}d ago){shield}"
+                )
+            else:
+                joined_txt = fmt_local(member.joined_at.isoformat(), "%m/%d/%Y") if member.joined_at else "?"
+                lines.append(
+                    f"• **{member.display_name}** (`{member.id}`) — no tracked activity "
+                    f"(joined {joined_txt}){shield}"
+                )
+        body = "\n".join(lines)
+        if len(results) > 100:
+            body += f"\n… +{len(results) - 100} more (all saved for kicking)"
+        embed.description = body[:3900]
+        embed.add_field(name="💤 Inactive", value=f"**{len(results)}**", inline=True)
+        embed.add_field(
+            name="🚫 Skipped",
+            value=f"{bots} bots · {staff} staff · {too_new} joined < {days}d",
+            inline=True,
+        )
+    embed.set_footer(
+        text=(
+            "Activity = comments or reactions. Staff, bots & new joins excluded. "
+            "🛡️ = never kicked. Next: `!removeinactives` (optional: `except @user`)."
+        )
+    )
+    await ctx.send(embed=embed)
+    await log_admin_action(ctx.author.id, "inactivesearch", None, f"days={days} results={len(results)}")
+
+
+@bot.command(name="removeinactives")
+@commands.has_role(ADMIN_ROLE_ID)
+async def removeinactives_cmd(ctx, *, args: str = ""):
+    """Kick members from the last !inactivesearch list (staff/bots/protected are never kicked).
+    Usage: !removeinactives
+           !removeinactives except @user @user ..."""
+    guild = ctx.guild
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT user_id, last_seen, inactive_days, scanned_at FROM inactive_scan ORDER BY inactive_days DESC"
+        )
+        scan = await cursor.fetchall()
+
+    if not scan:
+        await ctx.send("ℹ️ No saved inactive list. Run `!inactivesearch` first.")
+        return
+
+    # Parse exceptions: !removeinactives except @user <name> <id> ...
+    tokens = args.split()
+    except_ids = set()
+    if tokens:
+        if tokens[0].lower().rstrip(":") != "except":
+            await ctx.send("Usage: `!removeinactives` or `!removeinactives except @user @user ...`")
+            return
+        for token in tokens[1:]:
+            uid = None
+            m = re.match(r"<@!?(\d+)>$", token)
+            if m:
+                uid = int(m.group(1))
+            elif token.isdigit():
+                uid = int(token)
+            else:
+                named = guild.get_member_named(token)
+                if named:
+                    uid = named.id
+                else:
+                    folded = token.casefold()
+                    for sid, _, _, _ in scan:
+                        sm = guild.get_member(sid)
+                        if sm and folded in (sm.name.casefold(), sm.display_name.casefold()):
+                            uid = sid
+                            break
+            if uid is None:
+                await ctx.send(
+                    f"❌ Could not resolve `{token}` to a member on the inactive list. **No one was kicked.**"
+                )
+                return
+            except_ids.add(uid)
+
+    kicked, kept_except, kept_protected, gone, failed = [], [], [], [], []
+    scanned_at = scan[0][3]
+
+    for uid, last_seen, inactive_days, _ in scan:
+        member = guild.get_member(uid)
+        if not member:
+            gone.append(uid)
+            continue
+        if member.bot or is_staff_or_oak(member):
+            continue  # defensive — scan already excludes these
+        if uid in except_ids:
+            kept_except.append(member.display_name)
+            continue
+        if await is_kick_protected(member):
+            kept_protected.append(member.display_name)
+            continue
+        try:
+            await member.send(
+                f"👋 You've been removed from **{guild.name}** for inactivity "
+                f"(no messages or reactions for {inactive_days} days). "
+                "You're welcome to rejoin if you'd like to participate again!"
+            )
+        except discord.HTTPException:
+            pass
+        try:
+            await member.kick(
+                reason=f"Inactive {inactive_days}d+ (no messages/reactions) — !removeinactives by {ctx.author}"
+            )
+            kicked.append(member.display_name)
+            await log_admin_action(
+                ctx.author.id, "kick_inactive", uid, f"inactive {inactive_days}d (scan {scanned_at})"
+            )
+        except discord.Forbidden:
+            failed.append(f"{member.display_name} (missing permission/role hierarchy)")
+
+    embed = discord.Embed(
+        title="🧹 Inactive Cleanup",
+        color=discord.Color.red() if kicked else discord.Color.blurple(),
+        description=f"**Kicked {len(kicked)}** member(s) from a list scanned {fmt_local(scanned_at)}.",
+    )
+    if kicked:
+        embed.add_field(name=f"👢 Kicked ({len(kicked)})", value="\n".join(f"• {n}" for n in kicked)[:1020], inline=False)
+    if kept_except:
+        embed.add_field(name=f"✋ Kept — except ({len(kept_except)})", value="\n".join(f"• {n}" for n in kept_except)[:1020], inline=False)
+    if kept_protected:
+        embed.add_field(name=f"🛡️ Protected ({len(kept_protected)})", value="\n".join(f"• {n}" for n in kept_protected)[:1020], inline=False)
+    if failed:
+        embed.add_field(name=f"❌ Failed ({len(failed)})", value="\n".join(f"• {n}" for n in failed)[:1020], inline=False)
+    if gone:
+        embed.add_field(name="👻 Already gone", value=f"{len(gone)} member(s) had already left the server.", inline=False)
+    embed.set_footer(text=f"Kicked by {ctx.author} · run !inactivesearch to refresh the list")
     await ctx.send(embed=embed)
 
 

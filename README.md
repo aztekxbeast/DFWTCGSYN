@@ -169,7 +169,7 @@ One of these must be true within the window:
 | `!resetpings @user` | Clear a user's ping history |
 | `!resetallpings` | Clear ALL ping history (requires `!confirm`) |
 | `!stats @user` | Detailed stats for a user |
-| `!allstats` | Server-wide activity overview |
+| `!allstats` | Server-wide Hunter access & activity overview |
 | `!sync` | Run manual access check |
 | `!set <key> <value>` | Change a setting |
 | `!settings` | Show current settings |
@@ -177,6 +177,9 @@ One of these must be true within the window:
 | `!mee6import` | Import MEE6 level data via API |
 | `!mee6scan` | Scan messages for MEE6 level-up history |
 | `!messagescan` | Scan message history for access grants |
+| `!inactivesearch [days]` | List members with no comments/reactions for X days (default 60) |
+| `!removeinactives except @user` | Kick members from the inactive list, optionally excluding users |
+| `!kickwhitelist add/remove @user` | Protect a user from ever being kicked by `!removeinactives` |
 
 ### Restock & Location Commands
 
@@ -357,6 +360,9 @@ Everything stored in `data/pokehunt.db` (SQLite):
 - **settings** — `(key, value)` — mirrors config.json
 - **location_aliases** — `(alias, store, added_by, timestamp)`
 - **hunter_role_earned** — `(user_id, earned_at)` — tracks when user earned Hunter access
+- **user_activity** — `(user_id, last_seen)` — last comment/reaction per member (inactivity scans)
+- **kick_whitelist** — `(user_id, added_by, timestamp)` — users never kicked by `!removeinactives`
+- **inactive_scan** — `(user_id, last_seen, inactive_days, scanned_at)` — saved results of the last `!inactivesearch`
 
 ---
 
