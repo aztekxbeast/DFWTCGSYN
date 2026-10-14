@@ -312,6 +312,22 @@ async def is_kick_protected(member):
 WATERMARK_TEXT = "DFW TCG SYNDICATE"
 
 
+def is_watermark_channel(channel):
+    """Whether photos in this channel get the watermark repost treatment.
+
+    watermark_channels in config.json takes explicit channel names, or "*"
+    for the whole server. System channels are always excluded — deleting
+    and reposting there would break reaction-role menus and pinned posts."""
+    names = CONFIG.get("watermark_channels", [])
+    if not names:
+        return False
+    if channel.id in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
+        return False
+    if getattr(channel, "name", "") == CONFIG.get("rules_channel_name", "rules-and-guidelines"):
+        return False
+    return "*" in names or channel.name in names
+
+
 def _watermark_font(size):
     for path in (
         "DejaVuSans-Bold.ttf",
@@ -1531,7 +1547,7 @@ async def on_message(message):
     # Watermark channels: repost photo posts with watermarked images (original is
     # deleted so only the protected copy survives). Ping tracking above already
     # credited the author before the swap.
-    if message.channel.name in CONFIG.get("watermark_channels", []) and message.attachments:
+    if message.attachments and is_watermark_channel(message.channel):
         try:
             await repost_with_watermark(message)
         except Exception as e:
