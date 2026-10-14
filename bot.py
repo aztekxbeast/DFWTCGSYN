@@ -316,16 +316,26 @@ def is_watermark_channel(channel):
     """Whether photos in this channel get the watermark repost treatment.
 
     watermark_channels in config.json takes explicit channel names, or "*"
-    for the whole server. System channels are always excluded — deleting
-    and reposting there would break reaction-role menus and pinned posts."""
+    for the whole server. watermark_exclude_channels / watermark_exclude_categories
+    carve out exceptions (admin/mod channels, Resource Channels). System
+    channels are always excluded — deleting and reposting there would break
+    reaction-role menus and pinned posts."""
     names = CONFIG.get("watermark_channels", [])
     if not names:
         return False
     if channel.id in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
         return False
-    if getattr(channel, "name", "") == CONFIG.get("rules_channel_name", "rules-and-guidelines"):
+    name = getattr(channel, "name", "")
+    if name == CONFIG.get("rules_channel_name", "rules-and-guidelines"):
         return False
-    return "*" in names or channel.name in names
+    parent = getattr(channel, "parent", None)
+    excluded = set(CONFIG.get("watermark_exclude_channels", []))
+    if name in excluded or (parent and parent.name in excluded):
+        return False
+    category = getattr(channel, "category", None) or getattr(parent, "category", None)
+    if category and category.name in CONFIG.get("watermark_exclude_categories", []):
+        return False
+    return "*" in names or name in names
 
 
 def _watermark_font(size):

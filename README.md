@@ -124,6 +124,7 @@ Photos posted in tracked channels are automatically reposted by the bot with
 
 - The repost repeats the user's verbiage and @ role/user mentions — role pings still fire and the post still counts toward the author's ping totals
 - Active server-wide via `watermark_channels: ["*"]` in `config.json`; list explicit channel names instead to restrict it. System channels (announcements, get-roles, rules-and-guidelines) are always excluded so reaction-role menus and pinned posts aren't disrupted
+- Never watermarked: admin/mod channels (`admin-only`, `mods-chat`, `deleted-messages-privatemods`) and everything in the **Resource Channels** category — tune via `watermark_exclude_channels` / `watermark_exclude_categories`
 - Static images (JPEG/PNG/WebP) are watermarked; animated GIFs and other files pass through unchanged
 - Quality policy: standard phone photos (up to ~13MP, e.g. 4032×3024) keep full resolution (JPEG quality 95); larger camera modes are scaled down to fit the server's 256MB memory
 - Requires `Pillow` (listed in `requirements.txt`)
