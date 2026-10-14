@@ -391,13 +391,13 @@ def watermark_bytes(data):
         text_img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
         ImageDraw.Draw(text_img).text(
             (pad, pad), WATERMARK_TEXT, font=font,
-            fill=(255, 255, 255, 95),
-            stroke_width=2, stroke_fill=(0, 0, 0, 70),
+            fill=(255, 255, 255, 165),
+            stroke_width=2, stroke_fill=(0, 0, 0, 120),
         )
         tile = text_img.rotate(30, resample=Image.BICUBIC, expand=True)
         tile_w, tile_h = tile.size
-        step_x = max(int(tile_w * 1.25), 1)
-        step_y = max(int(tile_h * 1.7), 1)
+        step_x = max(int(tile_w * 1.15), 1)
+        step_y = max(int(tile_h * 1.35), 1)
 
         row = 0
         for y in range(0, h, step_y):
