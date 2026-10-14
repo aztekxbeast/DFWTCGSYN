@@ -116,6 +116,17 @@ Vague location mentions (e.g. "alliance", "glade", "watauga", "beach") in store 
 | **#pulls** | ✅ Tracked | ✅ | ✅ |
 | **#success** | ✅ Tracked | ✅ | ✅ |
 
+### Photo Watermarking (Beta — `#b-test-channel`)
+
+Photos posted in a watermark channel are automatically reposted by the bot with
+**"DFW TCG SYNDICATE"** tiled diagonally across the image, then the original
+(un-watermarked) message is deleted so only the protected copy survives.
+
+- The repost repeats the user's verbiage and @ role/user mentions — role pings still fire and the post still counts toward the author's ping totals
+- Configured via `watermark_channels` in `config.json` (currently `["b-test-channel"]` — roll out to more channels by adding their names)
+- Static images (JPEG/PNG/WebP) are watermarked; animated GIFs and other files pass through unchanged
+- Requires `Pillow` (listed in `requirements.txt`)
+
 ### Categories Tracked
 
 | Category | Ping Tracking | Chat Tracking |

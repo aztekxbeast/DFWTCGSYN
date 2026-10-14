@@ -11,6 +11,8 @@ from collections import defaultdict
 import aiosqlite
 import asyncio
 import aiohttp
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 load_dotenv()
 
@@ -303,6 +305,130 @@ async def is_kick_protected(member):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT 1 FROM kick_whitelist WHERE user_id = ?", (member.id,))
         return await cursor.fetchone() is not None
+
+
+# ─── Photo Watermarking ──────────────────────────────────────────────────────
+
+WATERMARK_TEXT = "DFW TCG SYNDICATE"
+
+
+def _watermark_font(size):
+    for path in (
+        "DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "Arial Bold.ttf",
+        "Arial.ttf",
+    ):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1
+        return ImageFont.load_default()
+
+
+def watermark_bytes(data):
+    """Tile WATERMARK_TEXT diagonally across a photo.
+
+    Returns the watermarked bytes, or None to pass the file through untouched
+    (animated images and anything PIL can't decode)."""
+    try:
+        img = Image.open(BytesIO(data))
+        fmt = (img.format or "").upper()
+        if fmt not in ("JPEG", "PNG", "WEBP") or getattr(img, "is_animated", False):
+            return None  # keep output format == input format; GIFs pass through
+        img = ImageOps.exif_transpose(img).convert("RGBA")
+    except Exception:
+        return None
+
+    w, h = img.size
+    if not w or not h:
+        return None
+
+    font = _watermark_font(max(20, min(w, h) // 12))
+    diag = int((w * w + h * h) ** 0.5) + 2
+
+    # Build an oversized tiled layer, then rotate it for the diagonal look
+    layer = Image.new("RGBA", (diag, diag), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    probe = draw.textbbox((0, 0), WATERMARK_TEXT, font=font)
+    tw, th = probe[2] - probe[0], probe[3] - probe[1]
+    step_x = max(int(tw * 2.2), 1)
+    step_y = max(int(th * 5), 1)
+    for row, y in enumerate(range(0, diag + step_y, step_y)):
+        offset = (row % 2) * step_x // 2  # stagger rows like brickwork
+        for x in range(-tw + offset, diag + tw, step_x):
+            draw.text(
+                (x, y), WATERMARK_TEXT, font=font,
+                fill=(255, 255, 255, 95),
+                stroke_width=2, stroke_fill=(0, 0, 0, 70),
+            )
+    layer = layer.rotate(30, resample=Image.BICUBIC)
+
+    left, top = (diag - w) // 2, (diag - h) // 2
+    out = Image.alpha_composite(img, layer.crop((left, top, left + w, top + h)))
+
+    buf = BytesIO()
+    if fmt == "JPEG":
+        out.convert("RGB").save(buf, "JPEG", quality=90)
+    elif fmt == "WEBP":
+        out.save(buf, "WEBP", quality=90)
+    else:
+        out.save(buf, "PNG")
+    return buf.getvalue()
+
+
+async def repost_with_watermark(message):
+    """Repost a photo post with watermarked images, then delete the original.
+
+    The repost repeats the user's verbiage and @ mentions (so role pings still
+    fire) and the original ping record is kept and re-pointed at the repost."""
+    files = []
+    for att in message.attachments:
+        try:
+            data = await att.read()
+        except discord.HTTPException:
+            return
+        is_image = (att.content_type or "").startswith("image/") or att.filename.lower().endswith(
+            (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+        )
+        if is_image:
+            watermarked = watermark_bytes(data)
+            if watermarked is not None:
+                data = watermarked
+        files.append(discord.File(BytesIO(data), filename=att.filename))
+
+    attribution = f"-# 📸 Watermarked repost · original by {message.author.display_name}"
+    content = f"{message.content}\n{attribution}" if message.content else attribution
+
+    try:
+        repost = await message.channel.send(
+            content,
+            files=files,
+            reference=message.reference,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+        )
+    except (discord.HTTPException, discord.Forbidden):
+        return  # leave the original alone if the repost can't be sent
+
+    try:
+        await message.delete()
+    except (discord.HTTPException, discord.Forbidden):
+        pass
+
+    # Keep ping jump-links (and ping counts) pointed at the surviving message
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE pings SET message_id = ? WHERE message_id = ? AND user_id = ?",
+                (repost.id, message.id, message.author.id),
+            )
+            await db.commit()
+    except Exception:
+        pass
 
 
 async def remove_hunting_noob(member):
@@ -1350,6 +1476,12 @@ async def on_message(message):
     # Track chat messages in all channels except server-announcements and get-roles
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
         await log_chat(user_id, channel_id, message.content)
+
+    # Watermark channels: repost photo posts with watermarked images (original is
+    # deleted so only the protected copy survives). Ping tracking above already
+    # credited the author before the swap.
+    if message.channel.name in CONFIG.get("watermark_channels", []) and message.attachments:
+        await repost_with_watermark(message)
 
 
 @bot.event

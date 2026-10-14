@@ -4,6 +4,7 @@
   "maintenance_window_days": 10,
   "media_to_maintain": 4,
   "media_channels": ["pulls", "success"],
+  "watermark_channels": ["b-test-channel"],
   "chat_to_maintain": 30,
   "chat_window_days": 7,
   "chat_channels": ["general-chat", "open-hunting", "general"],
