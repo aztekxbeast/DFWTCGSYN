@@ -339,45 +339,93 @@ def watermark_bytes(data):
         fmt = (img.format or "").upper()
         if fmt not in ("JPEG", "PNG", "WEBP") or getattr(img, "is_animated", False):
             return None  # keep output format == input format; GIFs pass through
-        img = ImageOps.exif_transpose(img).convert("RGBA")
+
+        w0, h0 = img.size
+        if fmt != "JPEG" and w0 * h0 > 8_000_000:
+            return None  # big non-JPEG needs a full RGBA decode — OOM risk on 256MB VM
+        # Scaled JPEG decode for big photos: a full decode plus copies of a 48MP
+        # photo blew past the 256MB VM and OOM-killed the bot mid-repost. The
+        # budget keeps every standard phone photo (12MP / 4032x3024) at FULL
+        # resolution; only larger camera modes are scaled to fit the VM.
+        decode_budget = 40 * 1024 * 1024
+        if fmt == "JPEG" and w0 * h0 * 3 > decode_budget:
+            n = 2
+            while n < 8 and (w0 // n) * (h0 // n) * 3 > decode_budget:
+                n *= 2
+            img.draft("RGB", (max(1, w0 // n), max(1, h0 // n)))
+        max_side = 4096
+        if max(img.size) > max_side:
+            scale = max_side / max(img.size)
+            img = img.resize(
+                (max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+                Image.LANCZOS,
+            )
+        if img.getexif().get(0x0112) not in (None, 1):
+            img = ImageOps.exif_transpose(img)  # copy only when actually rotated
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            img = img.convert("RGBA")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        # Materialize now: if the first in-place edit forces the lazy decode,
+        # PIL copies the whole image defensively (~36MB extra on a 12MP photo).
+        img.load()
     except Exception:
         return None
 
-    w, h = img.size
-    if not w or not h:
+    try:
+        w, h = img.size
+        if not w or not h:
+            return None
+
+        # Build ONE small rotated text tile and composite it in a staggered
+        # grid straight onto the photo (in place). A full-canvas diagonal
+        # overlay layer needed 100MB+ on large photos and OOM-killed the bot.
+        # Modest, consistent watermark size — fonts scaling with big photos
+        # cost memory and look different per photo
+        font = _watermark_font(min(64, max(24, min(w, h) // 14)))
+        # Measure via the font, NOT ImageDraw on the photo — Draw(img).textbbox()
+        # allocated ~93MB on a 12MP photo and pushed the VM into OOM kills.
+        tb = font.getbbox(WATERMARK_TEXT)
+        tw, th = tb[2] - tb[0], tb[3] - tb[1]
+        pad = 12
+        text_img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+        ImageDraw.Draw(text_img).text(
+            (pad, pad), WATERMARK_TEXT, font=font,
+            fill=(255, 255, 255, 95),
+            stroke_width=2, stroke_fill=(0, 0, 0, 70),
+        )
+        tile = text_img.rotate(30, resample=Image.BICUBIC, expand=True)
+        tile_w, tile_h = tile.size
+        step_x = max(int(tile_w * 1.25), 1)
+        step_y = max(int(tile_h * 1.7), 1)
+
+        row = 0
+        for y in range(0, h, step_y):
+            offset = (row % 2) * step_x // 2  # stagger rows like brickwork
+            for x in range(-offset, w, step_x):
+                dx, dy = max(0, x), y
+                cw, ch = min(tile_w, w - dx), min(tile_h, h - dy)
+                if cw <= 0 or ch <= 0:
+                    continue
+                src = tile if (cw == tile_w and ch == tile_h) else tile.crop((0, 0, cw, ch))
+                if img.mode == "RGBA":
+                    img.alpha_composite(src, (dx, dy))
+                else:
+                    img.paste(src, (dx, dy), src)  # no RGBA copy needed for plain photos
+            row += 1
+
+        buf = BytesIO()
+        if fmt == "JPEG":
+            if img.mode != "RGB":  # convert() copies even for same mode — avoid it
+                img = img.convert("RGB")
+            img.save(buf, "JPEG", quality=95)
+        elif fmt == "WEBP":
+            img.save(buf, "WEBP", quality=90)
+        else:
+            img.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:
         return None
-
-    font = _watermark_font(max(20, min(w, h) // 12))
-    diag = int((w * w + h * h) ** 0.5) + 2
-
-    # Build an oversized tiled layer, then rotate it for the diagonal look
-    layer = Image.new("RGBA", (diag, diag), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    probe = draw.textbbox((0, 0), WATERMARK_TEXT, font=font)
-    tw, th = probe[2] - probe[0], probe[3] - probe[1]
-    step_x = max(int(tw * 2.2), 1)
-    step_y = max(int(th * 5), 1)
-    for row, y in enumerate(range(0, diag + step_y, step_y)):
-        offset = (row % 2) * step_x // 2  # stagger rows like brickwork
-        for x in range(-tw + offset, diag + tw, step_x):
-            draw.text(
-                (x, y), WATERMARK_TEXT, font=font,
-                fill=(255, 255, 255, 95),
-                stroke_width=2, stroke_fill=(0, 0, 0, 70),
-            )
-    layer = layer.rotate(30, resample=Image.BICUBIC)
-
-    left, top = (diag - w) // 2, (diag - h) // 2
-    out = Image.alpha_composite(img, layer.crop((left, top, left + w, top + h)))
-
-    buf = BytesIO()
-    if fmt == "JPEG":
-        out.convert("RGB").save(buf, "JPEG", quality=90)
-    elif fmt == "WEBP":
-        out.save(buf, "WEBP", quality=90)
-    else:
-        out.save(buf, "PNG")
-    return buf.getvalue()
 
 
 async def repost_with_watermark(message):
@@ -385,11 +433,13 @@ async def repost_with_watermark(message):
 
     The repost repeats the user's verbiage and @ mentions (so role pings still
     fire) and the original ping record is kept and re-pointed at the repost."""
+    print(f"[watermark] processing {len(message.attachments)} attachment(s) in #{message.channel.name} from {message.author}")
     files = []
     for att in message.attachments:
         try:
             data = await att.read()
-        except discord.HTTPException:
+        except discord.HTTPException as e:
+            print(f"[watermark] failed to read attachment {att.filename}: {e}")
             return
         is_image = (att.content_type or "").startswith("image/") or att.filename.lower().endswith(
             (".jpg", ".jpeg", ".png", ".webp", ".bmp")
@@ -411,13 +461,14 @@ async def repost_with_watermark(message):
             mention_author=False,
             allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
         )
-    except (discord.HTTPException, discord.Forbidden):
+    except (discord.HTTPException, discord.Forbidden) as e:
+        print(f"[watermark] repost failed in #{message.channel.name}: {e}")
         return  # leave the original alone if the repost can't be sent
 
     try:
         await message.delete()
-    except (discord.HTTPException, discord.Forbidden):
-        pass
+    except (discord.HTTPException, discord.Forbidden) as e:
+        print(f"[watermark] could not delete original in #{message.channel.name}: {e}")
 
     # Keep ping jump-links (and ping counts) pointed at the surviving message
     try:
@@ -1481,7 +1532,10 @@ async def on_message(message):
     # deleted so only the protected copy survives). Ping tracking above already
     # credited the author before the swap.
     if message.channel.name in CONFIG.get("watermark_channels", []) and message.attachments:
-        await repost_with_watermark(message)
+        try:
+            await repost_with_watermark(message)
+        except Exception as e:
+            print(f"[watermark] unexpected error in #{message.channel.name}: {e}")
 
 
 @bot.event

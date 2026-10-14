@@ -125,6 +125,7 @@ Photos posted in a watermark channel are automatically reposted by the bot with
 - The repost repeats the user's verbiage and @ role/user mentions — role pings still fire and the post still counts toward the author's ping totals
 - Configured via `watermark_channels` in `config.json` (currently `["b-test-channel"]` — roll out to more channels by adding their names)
 - Static images (JPEG/PNG/WebP) are watermarked; animated GIFs and other files pass through unchanged
+- Quality policy: standard phone photos (up to ~13MP, e.g. 4032×3024) keep full resolution (JPEG quality 95); larger camera modes are scaled down to fit the server's 256MB memory
 - Requires `Pillow` (listed in `requirements.txt`)
 
 ### Categories Tracked
