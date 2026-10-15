@@ -311,6 +311,27 @@ async def is_kick_protected(member):
 
 WATERMARK_TEXT = "DFW TCG SYNDICATE"
 
+# channel_id -> webhook used for user-attributed reposts
+WATERMARK_WEBHOOKS = {}
+
+
+async def _get_watermark_webhook(channel):
+    """Find or create the channel webhook that reposts under the user's name."""
+    target = channel.parent if isinstance(channel, discord.Thread) else channel
+    cached = WATERMARK_WEBHOOKS.get(target.id)
+    if cached is not None:
+        return cached
+    try:
+        hook = discord.utils.get(await target.webhooks(), name="PokeHunt Watermark")
+        if hook is None:
+            hook = await target.create_webhook(
+                name="PokeHunt Watermark", reason="Watermarked photo reposts"
+            )
+        WATERMARK_WEBHOOKS[target.id] = hook
+        return hook
+    except (discord.HTTPException, discord.Forbidden):
+        return None
+
 
 def is_watermark_channel(channel):
     """Whether photos in this channel get the watermark repost treatment.
@@ -458,9 +479,11 @@ async def repost_with_watermark(message):
     """Repost a photo post with watermarked images, then delete the original.
 
     The repost repeats the user's verbiage and @ mentions (so role pings still
-    fire) and the original ping record is kept and re-pointed at the repost."""
+    fire) and the original ping record is kept and re-pointed at the repost.
+    It is sent via a webhook under the user's own name/avatar for quick
+    reference; if webhooks aren't available it falls back to a bot post."""
     print(f"[watermark] processing {len(message.attachments)} attachment(s) in #{message.channel.name} from {message.author}")
-    files = []
+    payloads = []  # (bytes, filename) — kept raw so a failed send can retry
     for att in message.attachments:
         try:
             data = await att.read()
@@ -474,22 +497,50 @@ async def repost_with_watermark(message):
             watermarked = watermark_bytes(data)
             if watermarked is not None:
                 data = watermarked
-        files.append(discord.File(BytesIO(data), filename=att.filename))
+        payloads.append((data, att.filename))
 
-    attribution = f"-# 📸 Watermarked repost · original by {message.author.display_name}"
-    content = f"{message.content}\n{attribution}" if message.content else attribution
+    def build_files():
+        return [discord.File(BytesIO(d), filename=n) for d, n in payloads]
 
-    try:
-        repost = await message.channel.send(
-            content,
-            files=files,
-            reference=message.reference,
-            mention_author=False,
-            allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
-        )
-    except (discord.HTTPException, discord.Forbidden) as e:
-        print(f"[watermark] repost failed in #{message.channel.name}: {e}")
-        return  # leave the original alone if the repost can't be sent
+    allowed = discord.AllowedMentions(roles=True, users=True, everyone=False)
+
+    repost = None
+    hook = await _get_watermark_webhook(message.channel)
+    if hook is not None:
+        content = f"{message.content}\n-# 📸 Watermarked repost" if message.content else "-# 📸 Watermarked repost"
+        kwargs = {}
+        if isinstance(message.channel, discord.Thread):
+            kwargs["thread"] = message.channel
+        try:
+            repost = await hook.send(
+                content,
+                files=build_files(),
+                username=message.author.display_name,
+                avatar_url=message.author.display_avatar.url,
+                allowed_mentions=allowed,
+                wait=True,
+                **kwargs,
+            )
+        except discord.HTTPException as e:
+            print(f"[watermark] webhook repost failed in #{message.channel.name}: {e}")
+            target = message.channel.parent if isinstance(message.channel, discord.Thread) else message.channel
+            WATERMARK_WEBHOOKS.pop(target.id, None)
+            repost = None
+
+    if repost is None:
+        attribution = f"-# 📸 Watermarked repost · original by {message.author.display_name}"
+        content = f"{message.content}\n{attribution}" if message.content else attribution
+        try:
+            repost = await message.channel.send(
+                content,
+                files=build_files(),
+                reference=message.reference,
+                mention_author=False,
+                allowed_mentions=allowed,
+            )
+        except (discord.HTTPException, discord.Forbidden) as e:
+            print(f"[watermark] repost failed in #{message.channel.name}: {e}")
+            return  # leave the original alone if the repost can't be sent
 
     try:
         await message.delete()
@@ -1500,6 +1551,8 @@ async def on_message(message):
         return
 
     if message.author.bot:
+        return
+    if message.webhook_id:  # webhook posts (including our own watermark reposts)
         return
     if not message.guild:
         return

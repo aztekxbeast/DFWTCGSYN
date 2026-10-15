@@ -123,6 +123,7 @@ Photos posted in tracked channels are automatically reposted by the bot with
 (un-watermarked) message is deleted so only the protected copy survives.
 
 - The repost repeats the user's verbiage and @ role/user mentions — role pings still fire and the post still counts toward the author's ping totals
+- Reposts appear under the original user's own name and avatar (via a channel webhook named "PokeHunt Watermark") for quick reference of who posted it; if webhooks aren't permitted in a channel it falls back to a bot post with an "original by" note
 - Active server-wide via `watermark_channels: ["*"]` in `config.json`; list explicit channel names instead to restrict it. System channels (announcements, get-roles, rules-and-guidelines) are always excluded so reaction-role menus and pinned posts aren't disrupted
 - Never watermarked: admin/mod channels (`admin-only`, `mods-chat`, `deleted-messages-privatemods`) and everything in the **Resource Channels** category — tune via `watermark_exclude_channels` / `watermark_exclude_categories`
 - Static images (JPEG/PNG/WebP) are watermarked; animated GIFs and other files pass through unchanged
