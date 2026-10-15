@@ -153,6 +153,21 @@ async def init_db():
                 inactive_days INTEGER,
                 scanned_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS photo_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                user_name TEXT,
+                channel_id INTEGER NOT NULL,
+                channel_name TEXT,
+                original_message_id INTEGER,
+                repost_message_id INTEGER,
+                content TEXT,
+                attachments TEXT,
+                ping_store TEXT,
+                ping_type TEXT,
+                counts_for_grant INTEGER DEFAULT 0,
+                timestamp TEXT NOT NULL
+            );
         """)
         # Migrations for existing database schemas
         try:
@@ -547,9 +562,16 @@ async def repost_with_watermark(message):
     except (discord.HTTPException, discord.Forbidden) as e:
         print(f"[watermark] could not delete original in #{message.channel.name}: {e}")
 
-    # Keep ping jump-links (and ping counts) pointed at the surviving message
+    # Keep ping jump-links (and ping counts) pointed at the surviving message;
+    # grab the ping info first so the photo archive entry has it.
+    ping_info = None
     try:
         async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "SELECT store, mention_type, counts_for_grant FROM pings WHERE message_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1",
+                (message.id, message.author.id),
+            )
+            ping_info = await cursor.fetchone()
             await db.execute(
                 "UPDATE pings SET message_id = ? WHERE message_id = ? AND user_id = ?",
                 (repost.id, message.id, message.author.id),
@@ -557,6 +579,89 @@ async def repost_with_watermark(message):
             await db.commit()
     except Exception:
         pass
+
+    await log_photo_repost(message, repost, ping_info)
+
+
+async def _photo_log_channel(guild):
+    """Staff-only channel for photo repost audit entries (created on first use)."""
+    name = CONFIG.get("photo_log_channel_name", "photo-log")
+    ch = discord.utils.get(guild.text_channels, name=name)
+    if ch is not None:
+        return ch
+    try:
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+        for rid in (ADMIN_ROLE_ID, MOD_ROLE_ID, PROFESSOR_OAK_ROLE_ID):
+            role = guild.get_role(rid) if rid else None
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True)
+        ch = await guild.create_text_channel(name, overwrites=overwrites, reason="Photo watermark audit log")
+        print(f"[watermark] created #{name} for photo audit logging")
+        return ch
+    except (discord.HTTPException, discord.Forbidden) as e:
+        print(f"[watermark] could not create #{name}: {e}")
+        return None
+
+
+async def log_photo_repost(message, repost, ping_info):
+    """Archive a watermarked repost to photo_log and post an audit entry.
+
+    The original message is deleted, so this is the durable record of who
+    posted what, where, and whether it counted toward their pings."""
+    attachments = [
+        {"filename": a.filename, "url": a.url, "size": a.size, "content_type": a.content_type}
+        for a in message.attachments
+    ]
+    store = mention_type = None
+    counts = 0
+    if ping_info:
+        store, mention_type = ping_info[0], ping_info[1]
+        counts = int(ping_info[2] or 0)
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO photo_log (user_id, user_name, channel_id, channel_name, "
+                "original_message_id, repost_message_id, content, attachments, "
+                "ping_store, ping_type, counts_for_grant, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (message.author.id, str(message.author), message.channel.id,
+                 getattr(message.channel, "name", ""), message.id, repost.id,
+                 message.content[:2000], json.dumps(attachments),
+                 store, mention_type, counts, now_iso()),
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[watermark] photo_log insert failed: {e}")
+
+    channel = await _photo_log_channel(message.guild)
+    if channel is None:
+        return
+    try:
+        embed = discord.Embed(
+            description=(message.content or "*(photo only)*")[:1500],
+            color=discord.Color.blurple(),
+        )
+        embed.set_author(name=f"{message.author} — photo post", icon_url=message.author.display_avatar.url)
+        jump = f"https://discord.com/channels/{message.guild.id}/{message.channel.id}/{repost.id}"
+        embed.add_field(
+            name="Where",
+            value=f"#{getattr(message.channel, 'name', '?')} · [jump to repost]({jump})",
+            inline=True,
+        )
+        embed.add_field(
+            name="Ping",
+            value=(f"{store or '?'}/{mention_type or '?'} · counted {'✅' if counts else '❌'}"
+                   if ping_info else "no ping recorded"),
+            inline=True,
+        )
+        if repost.attachments:
+            embed.set_thumbnail(url=repost.attachments[0].url)
+        embed.set_footer(text=f"original deleted · {len(message.attachments)} attachment(s) · archived to photo_log")
+        embed.timestamp = datetime.now(timezone.utc)
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"[watermark] photo_log post failed: {e}")
 
 
 async def remove_hunting_noob(member):
@@ -1940,6 +2045,7 @@ async def helpme_cmd(ctx):
                 "`!restorehunters` — Restore Hunter role for removed users\n"
                 "`!inactivesearch [days]` — List members inactive (no comments/reacts, default 60d)\n"
                 "`!removeinactives [except @user]` — Kick inactive list (with exceptions)\n"
+                "`!photolog [@user] [days]` — Archived photo posts with jump links\n"
                 "`!kickwhitelist add/remove @user` — Protect user from !removeinactives"
             ),
             inline=False
@@ -2460,6 +2566,45 @@ async def pingreport_cmd(ctx, target: str = None, limit: int = 15):
     embed.set_footer(text=f"Requested by {ctx.author} · times in CT (DFW) · only counted pings earn Hunter")
     await ctx.send(embed=embed)
     await log_admin_action(ctx.author.id, "pingreport", target.id, f"limit={limit}")
+
+
+@bot.command(name="photolog", aliases=["photos", "photohistory"])
+@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+async def photolog_cmd(ctx, target: discord.Member = None, days: int = 30):
+    """Show archived photo posts (watermarked reposts) with jump links.
+    Usage: !photolog [@user] [days]"""
+    days = days if days and days > 0 else 30
+    sql = (
+        "SELECT user_name, channel_name, content, ping_store, ping_type, counts_for_grant, "
+        "repost_message_id, channel_id, timestamp FROM photo_log WHERE timestamp >= ?"
+    )
+    params = [days_ago_iso(days)]
+    if target:
+        sql += " AND user_id = ?"
+        params.append(target.id)
+    sql += " ORDER BY timestamp DESC LIMIT 25"
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(sql, params)
+        rows = await cursor.fetchall()
+
+    if not rows:
+        await ctx.send(f"📋 No photo posts found in the last {days} day(s).")
+        return
+
+    embed = discord.Embed(title=f"📸 Photo Log — last {days} day(s)", color=discord.Color.blurple())
+    lines = []
+    for uname, cname, content, store, ptype, counted, rm_id, cid, ts in rows:
+        jump = f"https://discord.com/channels/{ctx.guild.id}/{cid}/{rm_id}"
+        snippet = (content or "*(photo only)*").replace("\n", " ")[:60]
+        ping = f"{store or '?'}/{ptype or '?'}{'✅' if counted else '❌'}"
+        lines.append(f"`{fmt_local(ts)}` **{uname}** in #{cname} — {ping} — [jump]({jump})\n{snippet}")
+    embed.description = "\n".join(lines)[:3900]
+    if target:
+        embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text=f"{len(rows)} shown · originals are deleted; links open the watermarked reposts")
+    await ctx.send(embed=embed)
+    await log_admin_action(ctx.author.id, "photolog", target.id if target else None, f"days={days}")
 
 
 @bot.command(name="stats")
@@ -4522,7 +4667,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
 @bot.event
 async def on_command_error(ctx, error):
-    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory")
+    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory", "photolog", "photos", "photohistory")
     cmd_name = ctx.command.qualified_name if ctx.command else ""
 
     if isinstance(error, (commands.MissingRole, commands.MissingAnyRole)):

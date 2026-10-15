@@ -7,6 +7,7 @@
   "watermark_channels": ["*"],
   "watermark_exclude_channels": ["admin-only", "mods-chat", "deleted-messages-privatemods"],
   "watermark_exclude_categories": ["Resource Channels"],
+  "photo_log_channel_name": "photo-log",
   "chat_to_maintain": 30,
   "chat_window_days": 7,
   "chat_channels": ["general-chat", "open-hunting", "general"],
