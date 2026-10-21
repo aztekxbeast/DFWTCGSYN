@@ -126,7 +126,7 @@ Photos posted in tracked channels are automatically reposted by the bot with
 - Reposts appear under the original user's own name and avatar (via a channel webhook named "PokeHunt Watermark") for quick reference of who posted it; if webhooks aren't permitted in a channel it falls back to a bot post with an "original by" note
 - Active server-wide via `watermark_channels: ["*"]` in `config.json`; list explicit channel names instead to restrict it. System channels (announcements, get-roles, rules-and-guidelines) are always excluded so reaction-role menus and pinned posts aren't disrupted
 - Never watermarked: admin/mod channels (`admin-only`, `mods-chat`, `deleted-messages-privatemods`) and everything in the **Resource Channels** category — tune via `watermark_exclude_channels` / `watermark_exclude_categories`
-- **Monitoring:** since originals are deleted, every repost is archived to `photo_log` (full text, original photo URLs, ping info) and announced in the staff `#photo-logs` channel with a jump link and thumbnail; search it any time with `!photolog [@user] [days]`
+- **Monitoring:** since originals are deleted, every repost is archived to `photo_log` (full text, original photo URLs, ping info) and announced in `#photo-logs` with a jump link and thumbnail. Each entry has a plain-text header (user · channel · ping) so Discord search can find it by user. Search with `!photolog [@user] [days]` or investigate one user with `!photoreport @user`
 - Static images (JPEG/PNG/WebP) are watermarked; animated GIFs and other files pass through unchanged
 - Quality policy: standard phone photos (up to ~13MP, e.g. 4032×3024) keep full resolution (JPEG quality 95); larger camera modes are scaled down to fit the server's 256MB memory
 - Requires `Pillow` (listed in `requirements.txt`)
@@ -186,6 +186,7 @@ One of these must be true within the window:
 | `!stats @user` | Detailed stats for a user |
 | `!allstats` | Server-wide Hunter access & activity overview |
 | `!photolog [@user] [days]` | Archived photo posts with jump links (Admin/Mod) |
+| `!photoreport @user [limit]` | One user's full photo history for ping investigations (Admin/Mod) |
 | `!sync` | Run manual access check |
 | `!set <key> <value>` | Change a setting |
 | `!settings` | Show current settings |

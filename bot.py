@@ -659,7 +659,13 @@ async def log_photo_repost(message, repost, ping_info):
             embed.set_thumbnail(url=repost.attachments[0].url)
         embed.set_footer(text=f"original deleted · {len(message.attachments)} attachment(s) · archived to photo_log")
         embed.timestamp = datetime.now(timezone.utc)
-        await channel.send(embed=embed)
+        # Plain-text header (Discord search does NOT index embed text) so each
+        # entry is findable in-channel by username, channel, or ping type
+        ping_txt = f"{store or '?'}/{mention_type or '?'}" if ping_info else "no ping"
+        await channel.send(
+            f"📸 **{message.author}** · #{getattr(message.channel, 'name', '?')} · {ping_txt}",
+            embed=embed,
+        )
     except Exception as e:
         print(f"[watermark] photo_log post failed: {e}")
 
@@ -2046,6 +2052,7 @@ async def helpme_cmd(ctx):
                 "`!inactivesearch [days]` — List members inactive (no comments/reacts, default 60d)\n"
                 "`!removeinactives [except @user]` — Kick inactive list (with exceptions)\n"
                 "`!photolog [@user] [days]` — Archived photo posts with jump links\n"
+                "`!photoreport @user [limit]` — One user's photo history (ping investigation)\n"
                 "`!kickwhitelist add/remove @user` — Protect user from !removeinactives"
             ),
             inline=False
@@ -2605,6 +2612,60 @@ async def photolog_cmd(ctx, target: discord.Member = None, days: int = 30):
     embed.set_footer(text=f"{len(rows)} shown · originals are deleted; links open the watermarked reposts")
     await ctx.send(embed=embed)
     await log_admin_action(ctx.author.id, "photolog", target.id if target else None, f"days={days}")
+
+
+@bot.command(name="photoreport", aliases=["preport"])
+@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+async def photoreport_cmd(ctx, target: discord.Member, limit: int = 25):
+    """Full photo post history for one user — for investigating pings.
+    Usage: !photoreport @user [limit]"""
+    limit = max(1, min(limit or 25, 25))
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(counts_for_grant), 0) FROM photo_log WHERE user_id = ?",
+            (target.id,),
+        )
+        total, counted = await cursor.fetchone()
+        cursor = await db.execute(
+            "SELECT channel_name, content, attachments, ping_store, ping_type, counts_for_grant, "
+            "repost_message_id, channel_id, timestamp FROM photo_log WHERE user_id = ? "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (target.id, limit),
+        )
+        rows = await cursor.fetchall()
+
+    if not rows:
+        await ctx.send(f"📋 No photo posts archived for {target.mention}.")
+        return
+
+    embed = discord.Embed(title=f"📸 Photo Report — {target}", color=discord.Color.blurple())
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(
+        name="Totals",
+        value=(f"**{total}** photo posts archived · **{counted}** counted toward pings · "
+               f"**{total - counted}** not counted"),
+        inline=False,
+    )
+    lines = []
+    for cname, content, atts_json, store, ptype, counted_row, rm_id, cid, ts in rows:
+        jump = f"https://discord.com/channels/{ctx.guild.id}/{cid}/{rm_id}"
+        snippet = (content or "*(photo only)*").replace("\n", " ")[:70]
+        ping = f"{store or '?'}/{ptype or '?'}{'✅' if counted_row else '❌'}"
+        try:
+            atts = json.loads(atts_json or "[]")
+        except Exception:
+            atts = []
+        att_note = ""
+        if atts:
+            names = ", ".join(a.get("filename", "?") for a in atts[:2])
+            att_note = f" · 📎 {names}" + (f" (+{len(atts) - 2})" if len(atts) > 2 else "")
+        lines.append(f"`{fmt_local(ts)}` **#{cname}** — {ping} — [jump]({jump}){att_note}\n{snippet}")
+    embed.description = "\n".join(lines)[:3900]
+    embed.set_footer(
+        text=f"{min(limit, len(rows))} of {total} shown · originals deleted; links open watermarked reposts · !pingreport for full ping history"
+    )
+    await ctx.send(embed=embed)
+    await log_admin_action(ctx.author.id, "photoreport", target.id, f"limit={limit}")
 
 
 @bot.command(name="stats")
@@ -4667,7 +4728,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
 @bot.event
 async def on_command_error(ctx, error):
-    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory", "photolog", "photos", "photohistory")
+    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory", "photolog", "photos", "photohistory", "photoreport", "preport")
     cmd_name = ctx.command.qualified_name if ctx.command else ""
 
     if isinstance(error, (commands.MissingRole, commands.MissingAnyRole)):
