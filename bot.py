@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 import aiosqlite
 import asyncio
+import gc
 import aiohttp
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -326,6 +327,10 @@ async def is_kick_protected(member):
 
 WATERMARK_TEXT = "DFW TCG SYNDICATE"
 
+# Serialize watermark processing so overlapping multi-photo posts can't
+# accumulate decode buffers and OOM the 256MB VM
+_WATERMARK_LOCK = asyncio.Lock()
+
 # channel_id -> webhook used for user-attributed reposts
 WATERMARK_WEBHOOKS = {}
 
@@ -496,10 +501,30 @@ async def repost_with_watermark(message):
     The repost repeats the user's verbiage and @ mentions (so role pings still
     fire) and the original ping record is kept and re-pointed at the repost.
     It is sent via a webhook under the user's own name/avatar for quick
-    reference; if webhooks aren't available it falls back to a bot post."""
+    reference; if webhooks aren't available it falls back to a bot post.
+
+    Serialized via _WATERMARK_LOCK so overlapping multi-photo posts can't
+    accumulate PIL decode buffers and OOM the VM."""
+    async with _WATERMARK_LOCK:
+        await _repost_with_watermark_locked(message)
+
+
+async def _repost_with_watermark_locked(message):
     print(f"[watermark] processing {len(message.attachments)} attachment(s) in #{message.channel.name} from {message.author}")
+
+    # Size guard: pass through rather than risk OOM on huge files
+    total_bytes = sum(a.size or 0 for a in message.attachments)
+    if total_bytes > 80 * 1024 * 1024:
+        print(f"[watermark] skip: total {total_bytes // (1024*1024)}MB exceeds 80MB limit")
+        return
+
     payloads = []  # (bytes, filename) — kept raw so a failed send can retry
     for att in message.attachments:
+        if (att.size or 0) > 30 * 1024 * 1024:
+            print(f"[watermark] pass through {att.filename}: {att.size // (1024*1024)}MB > 30MB")
+            payloads.append((await att.read(), att.filename))
+            gc.collect()  # free any intermediate buffers
+            continue
         try:
             data = await att.read()
         except discord.HTTPException as e:
@@ -512,6 +537,7 @@ async def repost_with_watermark(message):
             watermarked = watermark_bytes(data)
             if watermarked is not None:
                 data = watermarked
+            gc.collect()  # free PIL intermediates before next attachment
         payloads.append((data, att.filename))
 
     def build_files():
@@ -581,6 +607,8 @@ async def repost_with_watermark(message):
         pass
 
     await log_photo_repost(message, repost, ping_info)
+    payloads.clear()
+    gc.collect()  # free all attachment buffers before the next message
 
 
 async def _photo_log_channel(guild):
