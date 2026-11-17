@@ -4,6 +4,7 @@
   "maintenance_window_days": 10,
   "media_to_maintain": 4,
   "media_channels": ["pulls", "success"],
+  "half_ping_channels": ["pulls-and-hits💥🔥", "success"],
   "watermark_channels": ["*"],
   "watermark_exclude_channels": ["admin-only", "mods-chat", "deleted-messages-privatemods"],
   "watermark_exclude_categories": ["Resource Channels"],

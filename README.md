@@ -145,13 +145,13 @@ Photos posted in tracked channels are automatically reposted by the bot with
 ## Access Rules
 
 ### Gaining Pokemon Hunter Role
-- **10 total pings** (`@location` or `@OOS` mentions) to unlock
+- **10 weighted pings** to unlock — area channel posts count as **1.0**, `#pulls-and-hits💥🔥` / `#success` posts count as **0.5**, and store channel posts count as **0** (post in area channels instead)
 - Once you hit 10, you get the role automatically
 - Announcement posted in #server-announcements when granted
 
 ### Maintaining Pokemon Hunter Role (checked daily)
 One of these must be true within the window:
-- **4+ pings** within 10 days, OR
+- **4+ weighted pings** within 10 days, OR
 - **4+ media posts** within 10 days, OR
 - **30+ chat messages** within 7 days, OR
 - **Whitelisted** by an admin (bypasses all checks)

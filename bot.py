@@ -200,6 +200,24 @@ async def init_db():
                 await db.execute(col_sql)
             except Exception:
                 pass
+        try:
+            await db.execute("ALTER TABLE pings ADD COLUMN ping_weight REAL DEFAULT 1.0")
+        except Exception:
+            pass
+
+        # Backfill ping weights: 0.5 for pulls/success, 0.0 for store channels
+        half_channels = [c.lower() for c in CONFIG.get("half_ping_channels", [])]
+        store_channels = [c.lower() for c in CONFIG.get("store_channels", [])]
+        if store_channels:
+            await db.execute(
+                f"UPDATE pings SET ping_weight = 0.0 WHERE lower(channel_name) IN ({','.join('?' * len(store_channels))})",
+                tuple(store_channels),
+            )
+        if half_channels:
+            await db.execute(
+                f"UPDATE pings SET ping_weight = 0.5 WHERE lower(channel_name) IN ({','.join('?' * len(half_channels))}) AND ping_weight != 0.0",
+                tuple(half_channels),
+            )
         await db.commit()
         for key, value in CONFIG.items():
             await db.execute(
@@ -247,6 +265,23 @@ async def set_setting(key, value):
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def fmt_pings(n):
+    """Format weighted ping count for display: 10, 0.5, 4.5"""
+    return f"{float(n):g}"
+
+
+def ping_weight_for_channel(channel_name):
+    """Return the ping weight for a channel: 0.5 for pulls/success, 0.0 for store channels, 1.0 otherwise."""
+    if not channel_name:
+        return 1.0
+    name = channel_name.lower()
+    if name in {c.lower() for c in CONFIG.get("half_ping_channels", [])}:
+        return 0.5
+    if name in {c.lower() for c in CONFIG.get("store_channels", [])}:
+        return 0.0
+    return 1.0
 
 
 # Reports display times in DFW local time (stored timestamps stay UTC)
@@ -927,9 +962,12 @@ def get_announcement_channel(guild):
 async def count_in_window(table, user_id, window_days, only_counted=False):
     cutoff = days_ago_iso(window_days)
     async with aiosqlite.connect(DB_PATH) as db:
-        sql = f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?"
-        if only_counted and table == "pings":
-            sql += " AND counts_for_grant = 1"
+        if table == "pings":
+            sql = f"SELECT COALESCE(SUM(ping_weight), 0) FROM {table} WHERE user_id = ? AND timestamp >= ?"
+            if only_counted:
+                sql += " AND counts_for_grant = 1"
+        else:
+            sql = f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND timestamp >= ?"
         cursor = await db.execute(sql, (user_id, cutoff))
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -937,9 +975,12 @@ async def count_in_window(table, user_id, window_days, only_counted=False):
 
 async def count_total(table, user_id, only_counted=False):
     async with aiosqlite.connect(DB_PATH) as db:
-        sql = f"SELECT COUNT(*) FROM {table} WHERE user_id = ?"
-        if only_counted and table == "pings":
-            sql += " AND counts_for_grant = 1"
+        if table == "pings":
+            sql = f"SELECT COALESCE(SUM(ping_weight), 0) FROM {table} WHERE user_id = ?"
+            if only_counted:
+                sql += " AND counts_for_grant = 1"
+        else:
+            sql = f"SELECT COUNT(*) FROM {table} WHERE user_id = ?"
         cursor = await db.execute(sql, (user_id,))
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -1363,7 +1404,8 @@ def extract_store_from_text(message):
 import hashlib
 
 async def log_ping(user_id, channel_id, store, mention_type, content=None, location=None, message_id=None,
-                   channel_name=None, has_photo=False, counts_for_grant=True, reject_reason=None, added_by=None):
+                   channel_name=None, has_photo=False, counts_for_grant=True, reject_reason=None, added_by=None,
+                   ping_weight=1.0):
     async with aiosqlite.connect(DB_PATH) as db:
         if message_id:
             cursor = await db.execute(
@@ -1372,9 +1414,9 @@ async def log_ping(user_id, channel_id, store, mention_type, content=None, locat
             if await cursor.fetchone():
                 return None  # already logged this Discord message
         cursor = await db.execute(
-            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id, channel_name, has_photo, counts_for_grant, reject_reason, added_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, message_content, location, message_id, channel_name, has_photo, counts_for_grant, reject_reason, added_by, ping_weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, channel_id, store, mention_type, now_iso(), content, location, message_id,
-             channel_name, 1 if has_photo else 0, 1 if counts_for_grant else 0, reject_reason, added_by)
+             channel_name, 1 if has_photo else 0, 1 if counts_for_grant else 0, reject_reason, added_by, ping_weight)
         )
         ping_id = cursor.lastrowid
         await db.commit()
@@ -1456,7 +1498,7 @@ async def check_grant_access(user_id, guild):
     if total_pings >= required:
         await member.add_roles(hunter_role, reason="Reached ping threshold")
         await record_hunter_role_earned(user_id, "threshold")
-        await log_role_grant(user_id, "grant", f"{total_pings}/{required} counted pings", "threshold", None, total_pings)
+        await log_role_grant(user_id, "grant", f"{fmt_pings(total_pings)}/{required} counted pings", "threshold", None, total_pings)
         await remove_hunting_noob(member)
         channel = get_announcement_channel(guild)
         if channel:
@@ -1522,7 +1564,7 @@ async def check_access(user_id, guild):
 
         await member.remove_roles(hunter_role, reason="Failed activity maintenance")
         await assign_hunting_noob(member)
-        await log_role_grant(user_id, "revoke", f"failed maintenance pings={pings} media={media_count} chat={chat_count}", "maintenance", None, pings)
+        await log_role_grant(user_id, "revoke", f"failed maintenance pings={fmt_pings(pings)} media={media_count} chat={chat_count}", "maintenance", None, pings)
         channel = get_announcement_channel(guild)
         if channel:
             try:
@@ -1722,6 +1764,7 @@ async def on_message(message):
                 if not is_hunter and not message.attachments:
                     counts, reject = False, "no_photo"
             loc = extract_location_from_text(message.content)
+            pw = ping_weight_for_channel(getattr(message.channel, "name", None))
             await log_ping(
                 user_id, channel_id, mention["store"], mention["role_type"],
                 message.content[:500], loc, message.id,
@@ -1729,6 +1772,7 @@ async def on_message(message):
                 has_photo=bool(message.attachments),
                 counts_for_grant=counts,
                 reject_reason=reject,
+                ping_weight=pw,
             )
             if counts:
                 await check_grant_access(user_id, message.guild)
@@ -1933,7 +1977,7 @@ async def pingleaderboard_cmd(ctx):
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
+            "SELECT user_id, COALESCE(SUM(ping_weight), 0) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
             (limit,)
         )
         rows = await cursor.fetchall()
@@ -2275,10 +2319,10 @@ async def rescore_pings_for_official_rules():
     updated = 0
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT id, message_content, store, has_photo FROM pings"
+            "SELECT id, message_content, store, has_photo, channel_name FROM pings"
         )
         rows = await cursor.fetchall()
-        for pid, content, store, has_photo in rows:
+        for pid, content, store, has_photo, ch_name in rows:
             if store == "manual":
                 counts, reject = True, None
             else:
@@ -2303,8 +2347,8 @@ async def rescore_pings_for_official_rules():
                 else:
                     counts, reject = False, "no_store_role"
             await db.execute(
-                "UPDATE pings SET counts_for_grant = ?, reject_reason = ? WHERE id = ?",
-                (1 if counts else 0, reject, pid),
+                "UPDATE pings SET counts_for_grant = ?, reject_reason = ?, ping_weight = ? WHERE id = ?",
+                (1 if counts else 0, reject, ping_weight_for_channel(ch_name), pid),
             )
             updated += 1
         await db.commit()
@@ -2341,12 +2385,12 @@ async def syncdry_cmd(ctx):
             if not member:
                 continue
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1",
+                "SELECT COALESCE(SUM(ping_weight), 0) FROM pings WHERE user_id = ? AND counts_for_grant = 1",
                 (user_id,),
             )
             counted = (await cursor.fetchone())[0]
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1 AND timestamp >= ?",
+                "SELECT COALESCE(SUM(ping_weight), 0) FROM pings WHERE user_id = ? AND counts_for_grant = 1 AND timestamp >= ?",
                 (user_id, days_ago_iso(window)),
             )
             recent_p = (await cursor.fetchone())[0]
@@ -2363,7 +2407,7 @@ async def syncdry_cmd(ctx):
 
             has = bool(hunter_role and hunter_role in member.roles)
             is_wl = user_id in whitelist
-            line = f"• {member.mention} (`{user_id}`) counted={counted}/{required} · {window}d pings={recent_p}/{maintain_req}"
+            line = f"• {member.mention} (`{user_id}`) counted={fmt_pings(counted)}/{required} · {window}d pings={fmt_pings(recent_p)}/{maintain_req}"
 
             if is_wl:
                 would_keep.append(f"⭐ WL {line}")
@@ -2483,12 +2527,12 @@ async def pingreport_cmd(ctx, target: str = None, limit: int = 15):
         )
         raw_total = (await cursor.fetchone())[0]
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1",
+            "SELECT COALESCE(SUM(ping_weight), 0) FROM pings WHERE user_id = ? AND counts_for_grant = 1",
             (target.id,),
         )
         counted_total = (await cursor.fetchone())[0]
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND message_id IS NOT NULL AND counts_for_grant = 1",
+            "SELECT COALESCE(SUM(ping_weight), 0) FROM pings WHERE user_id = ? AND message_id IS NOT NULL AND counts_for_grant = 1",
             (target.id,),
         )
         counted_uniqueish = (await cursor.fetchone())[0]
@@ -2532,7 +2576,7 @@ async def pingreport_cmd(ctx, target: str = None, limit: int = 15):
         )
         grant_hist = await cursor.fetchall()
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM pings WHERE user_id = ? AND counts_for_grant = 1 AND timestamp >= ?",
+            "SELECT COALESCE(SUM(ping_weight), 0) FROM pings WHERE user_id = ? AND counts_for_grant = 1 AND timestamp >= ?",
             (target.id, days_ago_iso(window)),
         )
         recent_counted = (await cursor.fetchone())[0]
@@ -2733,8 +2777,8 @@ async def stats_cmd(ctx, target: discord.Member = None):
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.add_field(name="Pokemon Hunter", value="✅ Yes" if has_hunter else "❌ No", inline=True)
     embed.add_field(name="Whitelisted", value="✅ Yes" if is_whitelisted else "❌ No", inline=True)
-    embed.add_field(name="Total Pings", value=str(total_pings), inline=True)
-    embed.add_field(name=f"Pings ({window}d)", value=str(recent_pings), inline=True)
+    embed.add_field(name="Total Pings", value=fmt_pings(total_pings), inline=True)
+    embed.add_field(name=f"Pings ({window}d)", value=fmt_pings(recent_pings), inline=True)
     embed.add_field(name=f"Required ({window}d)", value=str(await get_setting("pings_to_maintain")), inline=True)
     embed.add_field(name="Media Posts", value=str(media_count), inline=True)
     embed.add_field(name="Chat Messages", value=str(chat_count), inline=True)
@@ -2763,18 +2807,18 @@ async def allstats_cmd(ctx):
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC"
+            "SELECT user_id, COALESCE(SUM(ping_weight), 0) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC"
         )
         all_pingers = await cursor.fetchall()
 
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
+            "SELECT user_id, COALESCE(SUM(ping_weight), 0) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id",
             (days_ago_iso(window),)
         )
         recent_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
 
         cursor = await db.execute(
-            "SELECT user_id, COUNT(*) as cnt FROM pings WHERE counts_for_grant = 1 GROUP BY user_id"
+            "SELECT user_id, COALESCE(SUM(ping_weight), 0) as cnt FROM pings WHERE counts_for_grant = 1 GROUP BY user_id"
         )
         counted_pingers = {uid: cnt for uid, cnt in await cursor.fetchall()}
 
