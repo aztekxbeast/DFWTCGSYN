@@ -2108,8 +2108,7 @@ async def helpme_cmd(ctx):
         embed.add_field(
             name="🛡️ Admin Commands",
             value=(
-                "`!whitelist add @user` — Grant permanent Hunter access\n"
-                "`!whitelist remove @user` — Remove from whitelist\n"
+                "`!whitelist add/remove @user` — Grant/remove permanent Hunter access\n"
                 "`!resetpings @user` — Clear a user's ping history\n"
                 "`!resetallpings` — Clear ALL ping history\n"
                 "`!stats @user` — Detailed stats for a user\n"
@@ -2120,20 +2119,19 @@ async def helpme_cmd(ctx):
                 "`!addping @user <count>` — Add pings (Admin only)\n"
                 "`!givehunter @user [reason]` — Grant Hunter (Admin only)\n"
                 "`!removehunter @user [reason]` — Remove Hunter (Admin only)\n"
-                "`!restorehunters` — Restore Hunter role for removed users\n"
-                "`!inactivesearch [days]` — List members inactive (no comments/reacts, default 60d)\n"
-                "`!removeinactives [except @user]` — Kick inactive list (with exceptions)\n"
-                "`!photolog [@user] [days]` — Archived photo posts with jump links\n"
-                "`!photoreport @user [limit]` — One user's photo history (ping investigation)\n"
-                "`!kickwhitelist add/remove @user` — Protect user from !removeinactives"
+                "`!restorehunters` — Restore Hunter role for removed users"
             ),
             inline=False
         )
         embed.add_field(
-            name="🛠️ Admin Tools",
+            name="🛡️ Admin Tools",
             value=(
-                "`!deepbackfill` — Scan for past pings (7 days)\n"
-                "`!deepbackfill 14` — Scan last 14 days\n"
+                "`!inactivesearch [days]` — List inactive members (default 60d)\n"
+                "`!removeinactives [except @user]` — Kick inactive list\n"
+                "`!photolog [@user] [days]` — Archived photo posts\n"
+                "`!photoreport @user [limit]` — One user's photo history\n"
+                "`!kickwhitelist add/remove @user` — Protect user from kicks\n"
+                "`!deepbackfill [days]` — Scan for past pings\n"
                 "`!addlocation <word>` — Add a location word\n"
                 "`!removelocation <word>` — Remove a location word\n"
                 "`!listlocations` — Show all location words"
@@ -2189,10 +2187,11 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
         await ctx.send("Usage: `!whitelist add/remove @user` or `!whitelist add/remove userid`")
         return
 
-    # Try to get member from mention first, then by ID
+    # Resolve to a Member (not just a User) so add_roles works
     member = None
     if ctx.message.mentions:
-        member = ctx.message.mentions[0]
+        mentioned = ctx.message.mentions[0]
+        member = ctx.guild.get_member(mentioned.id) or mentioned if isinstance(mentioned, discord.Member) else ctx.guild.get_member(mentioned.id)
     else:
         try:
             user_id = int(target)
@@ -2213,19 +2212,25 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
                 "INSERT OR REPLACE INTO whitelist (user_id, added_by, timestamp) VALUES (?, ?, ?)",
                 (member.id, ctx.author.id, now_iso())
             )
+            await db.commit()  # commit before role assignment so the entry is never lost
             hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
             if hunter_role and hunter_role not in member.roles:
-                await member.add_roles(hunter_role, reason="Whitelisted by admin")
-                await record_hunter_role_earned(member.id, "whitelist")
-                await log_role_grant(member.id, "grant", f"whitelisted by {ctx.author.id}", "whitelist", ctx.author.id)
-                await remove_hunting_noob(member)
+                try:
+                    await member.add_roles(hunter_role, reason="Whitelisted by admin")
+                    await record_hunter_role_earned(member.id, "whitelist")
+                    await log_role_grant(member.id, "grant", f"whitelisted by {ctx.author.id}", "whitelist", ctx.author.id)
+                    await remove_hunting_noob(member)
+                except discord.Forbidden:
+                    await ctx.send(f"⚠️ {member.mention} whitelisted, but I can't grant the Hunter role (check role hierarchy).")
+                    await log_admin_action(ctx.author.id, "whitelist_add", member.id, "role_grant_failed")
+                    return
             await ctx.send(f"✅ {member.mention} has been whitelisted (permanent Hunter access).")
             await log_admin_action(ctx.author.id, "whitelist_add", member.id, None)
         else:
             await db.execute("DELETE FROM whitelist WHERE user_id = ?", (member.id,))
+            await db.commit()
             await ctx.send(f"✅ {member.mention} has been removed from the whitelist.")
             await log_admin_action(ctx.author.id, "whitelist_remove", member.id, None)
-        await db.commit()
 
 
 @bot.command(name="resetpings")
