@@ -2064,7 +2064,7 @@ async def helpme_cmd(ctx):
             "`!pingtotal @user` — Someone else's total pings\n"
             "`!pingleaderboard` — Top ping contributors\n"
             "`!mylevel` — Full activity breakdown\n"
-            "`!helpme` / `!help` — Show this message"
+            "`!helpme` — Show this message"
         ),
         inline=False
     )
@@ -2104,36 +2104,34 @@ async def helpme_cmd(ctx):
             inline=False
         )
 
-    # Staff command list — Admin / Mod only (not shown to regular members)
-    if is_admin_or_mod(ctx.author):
+    if is_staff_or_oak(ctx.author):
         embed.add_field(
-            name="🛡️ Staff Commands (Admin / Mod)",
+            name="🛡️ Admin Commands",
             value=(
                 "`!whitelist add/remove @user` — Grant/remove permanent Hunter access\n"
                 "`!resetpings @user` — Clear a user's ping history\n"
                 "`!resetallpings` — Clear ALL ping history\n"
-                "`!resetleaderboard` — Reset ping leaderboard (clears ping counts)\n"
                 "`!stats @user` — Detailed stats for a user\n"
                 "`!pingreport @user` — Full ping history (mention, username, or ID)\n"
                 "`!allStats` — Server-wide Hunter access & activity overview\n"
                 "`!sync` — Run manual access check\n"
                 "`!syncdry` — Preview who would gain/lose Hunter (no changes)\n"
-                "`!addping @user <count>` — Add pings\n"
-                "`!givehunter @user [reason]` — Grant Hunter\n"
-                "`!removehunter @user [reason]` — Remove Hunter\n"
+                "`!addping @user <count>` — Add pings (Admin only)\n"
+                "`!givehunter @user [reason]` — Grant Hunter (Admin only)\n"
+                "`!removehunter @user [reason]` — Remove Hunter (Admin only)\n"
                 "`!restorehunters` — Restore Hunter role for removed users"
             ),
             inline=False
         )
         embed.add_field(
-            name="🛠️ Staff Tools (Admin / Mod)",
+            name="🛡️ Admin Tools",
             value=(
-                "`!resetleaderboard` — Reset ping leaderboard\n"
                 "`!inactivesearch [days]` — List inactive members (default 60d)\n"
                 "`!removeinactives [except @user]` — Kick inactive list\n"
                 "`!photolog [@user] [days]` — Archived photo posts\n"
                 "`!photoreport @user [limit]` — One user's photo history\n"
                 "`!kickwhitelist add/remove @user` — Protect user from kicks\n"
+                "`!resetleaderboard` — Reset ping leaderboard (Admin/Mod)\n"
                 "`!deepbackfill [days]` — Scan for past pings\n"
                 "`!addlocation <word>` — Add a location word\n"
                 "`!removelocation <word>` — Remove a location word\n"
@@ -2146,46 +2144,10 @@ async def helpme_cmd(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="help", aliases=["commands"])
-async def help_cmd(ctx):
-    await helpme_cmd(ctx)
-
-
-@bot.command(name="resetleaderboard", aliases=["resetlb", "resetleaderboardpings"])
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
-async def resetleaderboard_cmd(ctx):
-    """Reset the ping leaderboard (Admin / Mod only). Clears ping history after confirm."""
-    confirm_msg = await ctx.send(
-        "⚠️ **Reset ping leaderboard?** This clears **all ping counts** (leaderboard + totals). "
-        "Type `!confirmleaderboard` in the next 30 seconds to proceed."
-    )
-
-    def check(m):
-        return m.author.id == ctx.author.id and m.content.lower() == "!confirmleaderboard"
-
-    try:
-        await bot.wait_for("message", check=check, timeout=30)
-    except asyncio.TimeoutError:
-        await confirm_msg.edit(content="❌ Leaderboard reset cancelled (timed out).")
-        return
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM pings")
-        await db.commit()
-
-    await log_admin_action(ctx.author.id, "resetleaderboard", None, "cleared all pings")
-    await ctx.send("✅ **Ping leaderboard reset.** All ping counts cleared.")
-
-
-@bot.command(name="confirmleaderboard", hidden=True)
-async def confirmleaderboard_cmd(ctx):
-    pass  # confirmation gate for !resetleaderboard
-
-
 # ─── Admin Commands ──────────────────────────────────────────────────────────
 
 @bot.command(name="whitelist")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def whitelist_cmd(ctx, action: str = None, target: str = None):
     if action == "view":
         async with aiosqlite.connect(DB_PATH) as db:
@@ -2273,7 +2235,7 @@ async def whitelist_cmd(ctx, action: str = None, target: str = None):
 
 
 @bot.command(name="resetpings")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def resetpings_cmd(ctx, member: discord.Member = None):
     if not member:
         await ctx.send("Usage: `!resetpings @user`")
@@ -2285,7 +2247,7 @@ async def resetpings_cmd(ctx, member: discord.Member = None):
 
 
 @bot.command(name="resetallpings")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def resetallpings_cmd(ctx):
     confirm_msg = await ctx.send("⚠️ Are you sure? Type `!confirm` in the next 30 seconds to proceed.")
 
@@ -2307,6 +2269,37 @@ async def resetallpings_cmd(ctx):
 @bot.command(name="confirm", hidden=True)
 async def confirm_cmd(ctx):
     pass  # Used by resetallpings confirmation flow
+
+
+@bot.command(name="resetleaderboard", aliases=["resetlb", "resetleaderboardpings"])
+@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+async def resetleaderboard_cmd(ctx):
+    """Reset the ping leaderboard (Admin / Mod only)."""
+    confirm_msg = await ctx.send(
+        "⚠️ **Reset ping leaderboard?** This clears **all ping counts** (leaderboard + totals). "
+        "Type `!confirmleaderboard` in the next 30 seconds to proceed."
+    )
+
+    def check(m):
+        return m.author.id == ctx.author.id and m.content.lower() == "!confirmleaderboard"
+
+    try:
+        await bot.wait_for("message", check=check, timeout=30)
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(content="❌ Leaderboard reset cancelled (timed out).")
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM pings")
+        await db.commit()
+
+    await log_admin_action(ctx.author.id, "resetleaderboard", None, "cleared all pings")
+    await ctx.send("✅ **Ping leaderboard reset.** All ping counts cleared.")
+
+
+@bot.command(name="confirmleaderboard", hidden=True)
+async def confirmleaderboard_cmd(ctx):
+    pass  # confirmation gate for !resetleaderboard
 
 
 @bot.command(name="settings")
@@ -2340,7 +2333,7 @@ async def set_cmd(ctx, key: str = None, value: str = None):
 
 
 @bot.command(name="sync")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def sync_cmd(ctx):
     await ctx.send("🔄 Re-scoring pings + access check on all members...")
     await rescore_pings_for_official_rules()
@@ -2785,7 +2778,7 @@ async def photoreport_cmd(ctx, target: discord.Member, limit: int = 25):
 
 
 @bot.command(name="stats")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def stats_cmd(ctx, target: discord.Member = None):
     """Show detailed stats for a specific user.
     Usage: !stats @user"""
@@ -2839,7 +2832,7 @@ async def stats_cmd(ctx, target: discord.Member = None):
 
 
 @bot.command(name="allstats")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def allstats_cmd(ctx):
     """Show a server-wide overview of Hunter access and ping activity."""
     guild = ctx.guild
@@ -3844,7 +3837,7 @@ async def restockhistory_cmd(ctx, *args):
 
 
 @bot.command(name="addlocation")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def addlocation_cmd(ctx, location_word: str = None):
     """Add a location word so vague mentions get tracked.
     Usage: !addlocation alliance
@@ -3861,7 +3854,7 @@ async def addlocation_cmd(ctx, location_word: str = None):
 
 
 @bot.command(name="removelocation")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def removelocation_cmd(ctx, location_word: str = None):
     """Remove a location word.
     Usage: !removelocation alliance"""
@@ -3877,7 +3870,7 @@ async def removelocation_cmd(ctx, location_word: str = None):
 
 
 @bot.command(name="listlocations")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def listlocations_cmd(ctx):
     """Show all tracked location words."""
     if not LOCATION_WORDS:
@@ -3891,7 +3884,7 @@ async def listlocations_cmd(ctx):
 
 
 @bot.command(name="kickwhitelist", aliases=["kickwl", "inactivewhitelist"])
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def kickwhitelist_cmd(ctx, action: str = None, target: str = None):
     """Manage users who can NEVER be kicked by !removeinactives.
     Usage: !kickwhitelist add @user | !kickwhitelist remove @user | !kickwhitelist list
@@ -3955,7 +3948,7 @@ async def kickwhitelist_cmd(ctx, action: str = None, target: str = None):
 
 
 @bot.command(name="inactivesearch", aliases=["inactivescan", "inactivelist"])
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def inactivesearch_cmd(ctx, days: int = None):
     """List members with no comments or reactions for X days (default 60 = 2 months).
     Usage: !inactivesearch [days]
@@ -4053,7 +4046,7 @@ async def inactivesearch_cmd(ctx, days: int = None):
 
 
 @bot.command(name="removeinactives")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def removeinactives_cmd(ctx, *, args: str = ""):
     """Kick members from the last !inactivesearch list (staff/bots/protected are never kicked).
     Usage: !removeinactives
@@ -4157,7 +4150,7 @@ async def removeinactives_cmd(ctx, *, args: str = ""):
 
 
 @bot.command(name="givehunter", aliases=["grantHunter", "addhunter", "huntergrant"])
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def givehunter_cmd(ctx, member: discord.Member = None, *, reason: str = "manual grant"):
     """Manually grant Pokemon Hunter (Admin only). Logs who granted it.
     Usage: !givehunter @user [reason]
@@ -4186,7 +4179,7 @@ async def givehunter_cmd(ctx, member: discord.Member = None, *, reason: str = "m
 
 
 @bot.command(name="removehunter", aliases=["revokeHunter", "delhunter", "hunterremove"])
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def removehunter_cmd(ctx, member: discord.Member = None, *, reason: str = "manual revoke"):
     """Manually remove Pokemon Hunter (Admin only). Logs who removed it.
     Usage: !removehunter @user [reason]
@@ -4221,7 +4214,7 @@ async def removehunter_cmd(ctx, member: discord.Member = None, *, reason: str = 
 
 
 @bot.command(name="restorehunters")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def restorehunters_cmd(ctx, *names):
     """Restore the Pokemon Hunter role (and verify pings) for listed users.
     Usage: !restorehunters <name> <name> ...
@@ -4377,7 +4370,7 @@ async def assignnoobs_cmd(ctx):
 
 
 @bot.command(name="addping")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def addping_cmd(ctx, member: discord.Member = None, count: int = None):
     """Add pings to a user's record (Admin only).
     Usage: !addping @user <count>
@@ -4668,7 +4661,7 @@ async def backfill_cmd(ctx):
 
 
 @bot.command(name="deepbackfill")
-@commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
+@commands.has_role(ADMIN_ROLE_ID)
 async def deepbackfill_cmd(ctx, days: int = 7):
     """Scan store channels for past messages and create ping records.
     Usage: !deepbackfill (7 days default)
@@ -4844,7 +4837,7 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
 @bot.event
 async def on_command_error(ctx, error):
-    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory", "photolog", "photos", "photohistory", "photoreport", "preport")
+    unauthorized_cmds = ("addping", "whitelist", "resetpings", "resetallpings", "resetleaderboard", "restorehunters", "set", "settings", "pingreport", "pingrep", "phistory", "photolog", "photos", "photohistory", "photoreport", "preport")
     cmd_name = ctx.command.qualified_name if ctx.command else ""
 
     if isinstance(error, (commands.MissingRole, commands.MissingAnyRole)):
