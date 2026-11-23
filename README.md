@@ -193,6 +193,7 @@ One of these must be true within the window:
 | `!givehunter @user [reason]` | Grant Hunter role manually (Admin only) |
 | `!removehunter @user [reason]` | Remove Hunter role manually (Admin only) |
 | `!restorehunters` | Restore Hunter role for listed users |
+| `!resetleaderboard` | Reset ping leaderboard (clears all pings, Admin/Mod) |
 | `!set <key> <value>` | Change a setting |
 | `!settings` | Show current settings |
 | `!mee6sync` | Sync MEE6 Silver+ roles now |
