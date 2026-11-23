@@ -179,15 +179,20 @@ One of these must be true within the window:
 
 | Command | Description |
 |---------|-------------|
-| `!whitelist add @user` | Grant permanent Hunter access |
-| `!whitelist remove @user` | Remove from whitelist |
+| `!whitelist add/remove/view @user` | Grant, remove, or view permanent Hunter access |
 | `!resetpings @user` | Clear a user's ping history |
 | `!resetallpings` | Clear ALL ping history (requires `!confirm`) |
 | `!stats @user` | Detailed stats for a user |
+| `!pingreport @user [limit]` | Full ping history with jump links (Admin/Mod) |
 | `!allstats` | Server-wide Hunter access & activity overview |
 | `!photolog [@user] [days]` | Archived photo posts with jump links (Admin/Mod) |
 | `!photoreport @user [limit]` | One user's full photo history for ping investigations (Admin/Mod) |
 | `!sync` | Run manual access check |
+| `!syncdry` | Preview who would gain/lose Hunter (no changes) |
+| `!addping @user <count>` | Manually add pings (Admin only) |
+| `!givehunter @user [reason]` | Grant Hunter role manually (Admin only) |
+| `!removehunter @user [reason]` | Remove Hunter role manually (Admin only) |
+| `!restorehunters` | Restore Hunter role for listed users |
 | `!set <key> <value>` | Change a setting |
 | `!settings` | Show current settings |
 | `!mee6sync` | Sync MEE6 Silver+ roles now |
@@ -195,8 +200,9 @@ One of these must be true within the window:
 | `!mee6scan` | Scan messages for MEE6 level-up history |
 | `!messagescan` | Scan message history for access grants |
 | `!inactivesearch [days]` | List members with no comments/reactions for X days (default 60) |
-| `!removeinactives except @user` | Kick members from the inactive list, optionally excluding users |
-| `!kickwhitelist add/remove @user` | Protect a user from ever being kicked by `!removeinactives` |
+| `!removeinactives [except @user]` | Kick members from the inactive list, optionally excluding users |
+| `!kickwhitelist add/remove/view @user` | Protect a user from ever being kicked by `!removeinactives` |
+| `!deepbackfill [days]` | Scan message history for past pings |
 
 ### Restock & Location Commands
 
@@ -370,7 +376,7 @@ RepoHUB/
 
 Everything stored in `data/pokehunt.db` (SQLite):
 
-- **pings** — `(id, user_id, channel_id, store, mention_type, timestamp, message_content, location)`
+- **pings** — `(id, user_id, channel_id, store, mention_type, timestamp, message_content, location, channel_name, has_photo, counts_for_grant, reject_reason, added_by, ping_weight)` — `ping_weight` is 1.0 for area channels, 0.5 for pulls/success, 0.0 for store channels
 - **media** — `(id, user_id, channel_id, timestamp)`
 - **chat** — `(id, user_id, channel_id, timestamp)`
 - **whitelist** — `(user_id, added_by, timestamp)`
