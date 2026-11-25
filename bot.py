@@ -4782,9 +4782,11 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 if not matched_stores:
                     continue
 
-                # In open-hunting, only count pings with media attached
+                # In open-hunting, Trainers (non-Hunters) need a photo; Hunters may text-report
                 if channel_name == "open-hunting" and not message.attachments:
-                    continue
+                    h_role = guild.get_role(POKEMON_HUNTER_ROLE_ID) if guild else None
+                    if not (h_role and h_role in message.author.roles):
+                        continue
 
                 mention_type = "location" if has_ping else "location"
 
