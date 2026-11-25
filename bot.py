@@ -1629,6 +1629,43 @@ async def on_ready():
         else:
             print("WARNING: rules message not found — run !setrules with the message link")
 
+    # One-time startup access sync: grant Hunter to anyone who qualifies but
+    # missed the role (e.g. chat-based gaining added after their messages).
+    global _startup_sync_done
+    if not _startup_sync_done and bot.guilds:
+        _startup_sync_done = True
+        bot.loop.create_task(_startup_access_sync(bot.guilds[0]))
+
+
+_startup_sync_done = False
+
+
+async def _startup_access_sync(guild):
+    """Grant Hunter to qualifying members who don't have it yet (runs once)."""
+    await asyncio.sleep(5)  # let member cache settle
+    granted = 0
+    for member in guild.members:
+        if member.bot:
+            continue
+        try:
+            hunter_role = guild.get_role(POKEMON_HUNTER_ROLE_ID)
+            if not hunter_role or hunter_role in member.roles:
+                continue
+            total_pings = await count_total("pings", member.id, only_counted=True)
+            chat_count = await count_total("chat", member.id)
+            required = int(await get_setting("pings_to_gain"))
+            chat_required = int(await get_setting("messages_to_gain"))
+            if total_pings >= required or chat_count >= chat_required:
+                await member.add_roles(hunter_role, reason="Startup access sync")
+                await record_hunter_role_earned(member.id, "startup_sync")
+                await log_role_grant(member.id, "grant", f"{fmt_pings(total_pings)}/{required} pings · {chat_count}/{chat_required} chats", "startup_sync", None, total_pings)
+                await remove_hunting_noob(member)
+                granted += 1
+        except Exception:
+            pass
+    if granted:
+        print(f"[startup_sync] Granted Hunter role to {granted} member(s)")
+
 
 @bot.event
 async def on_member_join(member):
