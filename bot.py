@@ -219,6 +219,35 @@ async def init_db():
                 tuple(half_channels),
             )
         await db.commit()
+
+        # Recover pings lost to the old !resetleaderboard (DELETE FROM pings).
+        # photo_log captured ping info at watermark time; rebuild pings from it.
+        cursor = await db.execute("""
+            SELECT pl.user_id, pl.channel_id, pl.channel_name, pl.content,
+                   pl.original_message_id, pl.repost_message_id,
+                   pl.ping_store, pl.ping_type, pl.counts_for_grant, pl.timestamp
+            FROM photo_log pl
+            WHERE pl.ping_store IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM pings p
+                  WHERE p.user_id = pl.user_id
+                    AND p.message_id IN (pl.original_message_id, pl.repost_message_id)
+              )
+        """)
+        recovered = await cursor.fetchall()
+        if recovered:
+            for (uid, cid, cname, content, orig_id, repost_id,
+                 store, ptype, counted, ts) in recovered:
+                pw = ping_weight_for_channel(cname)
+                await db.execute(
+                    "INSERT INTO pings (user_id, channel_id, store, mention_type, timestamp, "
+                    "message_content, message_id, channel_name, counts_for_grant, ping_weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (uid, cid, store, ptype, ts, (content or "")[:500],
+                     repost_id or orig_id, cname, counted, pw),
+                )
+            await db.commit()
+            print(f"[init_db] Recovered {len(recovered)} lost pings from photo_log")
         for key, value in CONFIG.items():
             await db.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
