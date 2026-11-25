@@ -1495,10 +1495,12 @@ async def check_grant_access(user_id, guild):
 
     total_pings = await count_total("pings", user_id, only_counted=True)
     required = int(await get_setting("pings_to_gain"))
-    if total_pings >= required:
-        await member.add_roles(hunter_role, reason="Reached ping threshold")
+    chat_count = await count_total("chat", user_id)
+    chat_required = int(await get_setting("messages_to_gain"))
+    if total_pings >= required or chat_count >= chat_required:
+        await member.add_roles(hunter_role, reason="Reached ping/chat threshold")
         await record_hunter_role_earned(user_id, "threshold")
-        await log_role_grant(user_id, "grant", f"{fmt_pings(total_pings)}/{required} counted pings", "threshold", None, total_pings)
+        await log_role_grant(user_id, "grant", f"{fmt_pings(total_pings)}/{required} pings · {chat_count}/{chat_required} chats", "threshold", None, total_pings)
         await remove_hunting_noob(member)
         channel = get_announcement_channel(guild)
         if channel:
@@ -1577,10 +1579,12 @@ async def check_access(user_id, guild):
     else:
         total_pings = await count_total("pings", user_id, only_counted=True)
         required = int(await get_setting("pings_to_gain"))
-        if total_pings >= required:
-            await member.add_roles(hunter_role, reason="Reached ping threshold")
+        chat_count = await count_total("chat", user_id)
+        chat_required = int(await get_setting("messages_to_gain"))
+        if total_pings >= required or chat_count >= chat_required:
+            await member.add_roles(hunter_role, reason="Reached ping/chat threshold")
             await record_hunter_role_earned(user_id, "threshold")
-            await log_role_grant(user_id, "grant", f"{total_pings}/{required} counted pings", "threshold", None, total_pings)
+            await log_role_grant(user_id, "grant", f"{fmt_pings(total_pings)}/{required} pings · {chat_count}/{chat_required} chats", "threshold", None, total_pings)
             await remove_hunting_noob(member)
             channel = get_announcement_channel(guild)
             if channel:
@@ -1788,7 +1792,9 @@ async def on_message(message):
 
     # Track chat messages in all channels except server-announcements and get-roles
     if message.channel.id not in (ANNOUNCEMENTS_CHANNEL_ID, GETROLES_CHANNEL_ID):
-        await log_chat(user_id, channel_id, message.content)
+        logged_chat = await log_chat(user_id, channel_id, message.content)
+        if logged_chat:
+            await check_grant_access(user_id, message.guild)
 
     # Watermark channels: repost photo posts with watermarked images (original is
     # deleted so only the protected copy survives). Ping tracking above already
@@ -2076,7 +2082,8 @@ async def helpme_cmd(ctx):
             "• No store role? Use `@Other` + store name in the message\n"
             "• Trainers: **photo required** in `#open-hunting`\n"
             "• Questions / bare store words / typed `@walmart` **do not count**\n"
-            "• Once you hit 10 counted pings, you unlock Hunter automatically\n"
+            "• Or reach **50 chat messages** to unlock via activity\n"
+            "• Once you hit **10 weighted pings** or **50 chats**, you unlock Hunter\n"
             "• Use `!pings` to check your progress"
         ),
         inline=False
