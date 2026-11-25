@@ -1982,9 +1982,10 @@ async def pingleaderboard_cmd(ctx):
     required = int(await get_setting("pings_to_gain"))
     hunter_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID)
     async with aiosqlite.connect(DB_PATH) as db:
+        lb_start = await get_setting("leaderboard_start")
         cursor = await db.execute(
-            "SELECT user_id, COALESCE(SUM(ping_weight), 0) as cnt FROM pings GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
-            (limit,)
+            "SELECT user_id, COALESCE(SUM(ping_weight), 0) as cnt FROM pings WHERE timestamp >= ? GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
+            (lb_start or "2020-01-01T00:00:00+00:00", limit)
         )
         rows = await cursor.fetchall()
 
@@ -2281,9 +2282,12 @@ async def confirm_cmd(ctx):
 @bot.command(name="resetleaderboard", aliases=["resetlb", "resetleaderboardpings"])
 @commands.has_any_role(ADMIN_ROLE_ID, MOD_ROLE_ID)
 async def resetleaderboard_cmd(ctx):
-    """Reset the ping leaderboard (Admin / Mod only)."""
+    """Reset the ping leaderboard display only (Admin / Mod only).
+    Does NOT delete actual ping data — users keep their counts for Hunter access."""
     confirm_msg = await ctx.send(
-        "⚠️ **Reset ping leaderboard?** This clears **all ping counts** (leaderboard + totals). "
+        "⚠️ **Reset ping leaderboard display?**\n"
+        "This clears the **leaderboard ranking only** — users keep their actual ping counts "
+        "for gaining/maintaining Hunter access.\n"
         "Type `!confirmleaderboard` in the next 30 seconds to proceed."
     )
 
@@ -2296,12 +2300,13 @@ async def resetleaderboard_cmd(ctx):
         await confirm_msg.edit(content="❌ Leaderboard reset cancelled (timed out).")
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM pings")
-        await db.commit()
+    await set_setting("leaderboard_start", now_iso())
 
-    await log_admin_action(ctx.author.id, "resetleaderboard", None, "cleared all pings")
-    await ctx.send("✅ **Ping leaderboard reset.** All ping counts cleared.")
+    await log_admin_action(ctx.author.id, "resetleaderboard", None, "leaderboard display reset (pings preserved)")
+    await ctx.send(
+        "✅ **Ping leaderboard display reset.** Rankings start fresh from now.\n"
+        "All user ping counts are preserved for Hunter access."
+    )
 
 
 @bot.command(name="confirmleaderboard", hidden=True)
