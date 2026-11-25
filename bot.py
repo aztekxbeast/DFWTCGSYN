@@ -4856,7 +4856,8 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                 # In open-hunting, Trainers (non-Hunters) need a photo; Hunters may text-report
                 if channel_name == "open-hunting" and not message.attachments:
                     h_role = ctx.guild.get_role(POKEMON_HUNTER_ROLE_ID) if ctx.guild else None
-                    if not (h_role and h_role in message.author.roles):
+                    author_roles = getattr(message.author, "roles", [])
+                    if not (h_role and h_role in author_roles):
                         continue
 
                 mention_type = "location" if has_ping else "location"
