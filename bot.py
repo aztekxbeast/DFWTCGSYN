@@ -1846,6 +1846,26 @@ async def on_message(message):
             )
             if counts:
                 await check_grant_access(user_id, message.guild)
+        else:
+            # Half-ping channels (success/pulls-and-hits): photo + text = 0.5 ping
+            # even without a store mention — users just post "look what I got!" + photo
+            half_channels = [c.lower() for c in CONFIG.get("half_ping_channels", [])]
+            ch_name = getattr(message.channel, "name", "") or ""
+            if message.attachments and ch_name.lower() in half_channels:
+                body = _strip_mentions_for_body(message.content)
+                if body and len(body) >= 2:
+                    pw = ping_weight_for_channel(ch_name)
+                    await log_ping(
+                        user_id, channel_id, "photo_post", "photo",
+                        message.content[:500], None, message.id,
+                        channel_name=ch_name,
+                        has_photo=True,
+                        counts_for_grant=True,
+                        reject_reason=None,
+                        ping_weight=pw,
+                    )
+                    if pw > 0:
+                        await check_grant_access(user_id, message.guild)
 
     # Track media (attachments) only in media channels
     media_channels = CONFIG.get("media_channels", [])
@@ -4752,6 +4772,8 @@ async def deepbackfill_cmd(ctx, days: int = 7):
 
     store_list = CONFIG.get("store_channels", [])
     scan_channels = [s for s in store_list]  # walmart, target, etc.
+    half_channels = [c.lower() for c in CONFIG.get("half_ping_channels", [])]
+    scan_channels.extend(half_channels)  # success, pulls-and-hits
 
     # Dynamically find all channels under Ft Worth Area Hunts and Dallas Area Hunts categories
     location_categories = ["ft worth area hunts", "dallas area hunts", "others", "store general info"]
@@ -4849,6 +4871,25 @@ async def deepbackfill_cmd(ctx, days: int = 7):
                     # If in a store channel with a ping, count the channel as the store
                     if not matched_stores and has_ping and channel_name in store_list:
                         matched_stores.append(channel_name)
+
+                # Half-ping channels: photo + text = 0.5 ping (no store mention needed)
+                if (channel_name and channel_name.lower() in half_channels and 
+                        message.attachments):
+                    body = _strip_mentions_for_body(message.content)
+                    if body and len(body) >= 2:
+                        pw = ping_weight_for_channel(channel_name)
+                        logged = await log_ping(
+                            message.author.id, message.channel.id, "photo_post", "photo",
+                            message.content[:500], None, message.id,
+                            channel_name=channel_name,
+                            has_photo=True,
+                            counts_for_grant=True,
+                            reject_reason=None,
+                            ping_weight=pw,
+                        )
+                        if logged:
+                            total_added += 1
+                        continue
 
                 if not matched_stores:
                     continue
